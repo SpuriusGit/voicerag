@@ -1,0 +1,29 @@
+# Keep the build context small and free of anything secret or machine-local.
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local state: the image builds its own index at first start.
+.env
+storage/
+runs/
+models/
+data/finetune/
+data/audio/*
+!data/audio/.gitkeep
+
+# Dev-only tooling and caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.idea/
+.vscode/
+tests/
+docs/
+Makefile
