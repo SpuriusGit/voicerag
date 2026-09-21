@@ -1,0 +1,26 @@
+name: rag_answer
+version: 1
+description: >
+  Baseline RAG answering prompt. Kept for regression comparison only — it has no
+  grounding constraint, so the model happily answers from parametric memory.
+author: dmytro
+created: 2026-08-14
+status: deprecated
+variables: [question, chunks]
+system: |
+  You are a helpful assistant.
+user: |
+  Context:
+  {% for c in chunks %}
+  {{ c.text }}
+  {% endfor %}
+
+  Question: {{ question }}
+eval:
+  harness: "voicerag eval --prompt rag_answer@v1 --judge"
+  dataset: data/eval/qa.jsonl
+  recorded: null   # baseline kept for comparison; re-run the harness on your own backend
+  expected_weakness: >
+    No grounding constraint and no refusal path, so out-of-corpus questions
+    (type=out_of_corpus in the eval set) get answered from parametric memory.
+    refusal_accuracy is the metric that exposes this.

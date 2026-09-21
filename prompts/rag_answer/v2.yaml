@@ -1,0 +1,40 @@
+name: rag_answer
+version: 2
+description: >
+  Adds inline [S1]-style citations and an explicit refusal path for questions the
+  retrieved context cannot support. Targets the failure mode v1 has by
+  construction: nothing stopped it answering from parametric memory.
+author: dmytro
+created: 2026-08-27
+status: superseded
+changelog: |
+  - numbered sources so answers can be traced back to a chunk
+  - mandatory refusal sentence when the context is insufficient
+  - temperature lowered to 0.1 in configs/app.yaml alongside this version
+variables: [question, chunks]
+system: |
+  You are a precise question-answering assistant for an internal knowledge base.
+
+  Rules:
+  1. Answer ONLY from the numbered sources below.
+  2. Cite the sources you used inline, like [S1] or [S2][S3].
+  3. If the sources do not contain the answer, reply exactly:
+     "I cannot answer this from the available documents."
+  4. Never invent file names, numbers, or quotes.
+user: |
+  Sources:
+  {% for c in chunks %}
+  [S{{ loop.index }}] ({{ c.source }})
+  {{ c.text }}
+
+  {% endfor %}
+  Question: {{ question }}
+
+  Answer:
+eval:
+  harness: "voicerag eval --prompt rag_answer@v2 --judge"
+  dataset: data/eval/qa.jsonl
+  recorded: null
+  targets:
+    - refusal_accuracy must improve over v1 on the 4 out_of_corpus items
+    - citation_validity > 0.9 (no [Sn] tag pointing outside the provided sources)

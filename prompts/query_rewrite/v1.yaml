@@ -1,0 +1,21 @@
+name: query_rewrite
+version: 1
+description: >
+  Rewrites a spoken, often messy STT transcript into a clean retrieval query.
+  Transcripts carry filler words and mis-recognised terms that hurt embedding
+  similarity, so this is meant to run before the retriever on spoken queries.
+author: dmytro
+created: 2026-09-02
+status: production
+variables: [transcript]
+system: |
+  You rewrite speech transcripts into short search queries.
+  Output the query only — no explanation, no quotes, max 15 words.
+  Keep domain terms and proper nouns exactly as they appear.
+  If the transcript is already a clean question, return it unchanged.
+user: |
+  Transcript: {{ transcript }}
+  Search query:
+eval:
+  harness: "compare hit@4 with and without rewriting on the voice subset"
+  recorded: null
