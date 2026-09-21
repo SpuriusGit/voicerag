@@ -70,7 +70,9 @@ class STTSettings(BaseModel):
 
 class PromptSettings(BaseModel):
     dir: Path = Path("prompts")
-    answer: str = "rag_answer@latest"
+    # Pinned, never @latest: adding a prompt file must not promote it. v4 was
+    # measured as worse than v3 and would otherwise have shipped on creation.
+    answer: str = "rag_answer@v3"
     judge: str = "judge_faithfulness@latest"
     query_rewrite: str = "query_rewrite@latest"
 

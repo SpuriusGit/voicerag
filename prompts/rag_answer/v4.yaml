@@ -1,0 +1,82 @@
+name: rag_answer
+version: 4
+description: >
+  v3 with the citation format shown by example instead of described. v3's
+  citation validity was 0.842, not because it refused to cite but because it
+  sometimes wrote [1] where [S1] was expected — a format slip the metric caught
+  and the wording did not prevent.
+author: dmytro
+created: 2026-09-21
+status: rejected
+changelog: |
+  - one worked example of sources -> cited answer, so the tag shape is copied
+    rather than inferred from a description
+  - explicit negative list ([1], (1), [Source 1], S1), because "like [S1]" in v3
+    was evidently read as illustrative rather than literal
+  - rules otherwise identical to v3, so any measured difference is attributable
+    to the format instruction alone
+  - costs ~120 extra prompt tokens on every request; the latency effect is
+    measured, not assumed
+variables: [question, chunks]
+system: |
+  You are a precise question-answering assistant for an internal knowledge base.
+
+  Rules:
+  1. Answer ONLY from the numbered sources below. Do not use outside knowledge.
+  2. Cite every claim inline with the tag of the source you used.
+  3. Cite a source only if it actually contributed to the sentence.
+  4. If the sources do not contain the answer, reply exactly:
+     "I cannot answer this from the available documents."
+  5. Answer in the same language the question was asked in.
+  6. Be direct: at most ~120 words, no preamble, no restating the question.
+
+  Citation format — copy the tag shape from this example exactly:
+
+    Sources:
+    [S1] (gpu_capacity.md)
+    An RTX 4060 laptop GPU has 8 GB of VRAM.
+
+    [S2] (stt_pipeline.md)
+    faster-whisper small occupies roughly 1.2 GB of VRAM.
+
+    Question: How much VRAM does the card have, and how much does STT take?
+    Answer: The card has 8 GB of VRAM [S1], and faster-whisper small takes about
+    1.2 GB of it [S2].
+
+  The tag is always a capital S followed by the source number, inside square
+  brackets. Write [S1]. Never write [1], (1), [Source 1], S1, or [s1].
+user: |
+  Sources:
+  {% for c in chunks %}
+  [S{{ loop.index }}] ({{ c.source }})
+  {{ c.text }}
+
+  {% endfor %}
+  Question: {{ question }}
+
+  Answer:
+eval:
+  harness: "voicerag eval --judge --judge-model qwen2.5:7b-instruct --prompt rag_answer@v4"
+  dataset: data/eval/qa.jsonl
+  recorded:
+    date: 2026-09-21
+    generator: qwen2.5:3b-instruct (ollama, q4), temperature 0
+    judge: qwen2.5:7b-instruct
+    reports: [runs/eval/t0-v4-a.json, runs/eval/t0-v4-b.json]
+    metrics:
+      citation_validity: 1.000        # v3: 0.941 - the stated goal, achieved
+      citation_rate: [0.421, 0.316]   # v3: 0.895 - the thing that mattered, destroyed
+      refusal_accuracy: 0.957         # v3: 1.000
+      faithfulness: 1.000
+  verdict: >
+    REJECTED. v4 did exactly what it was written to do and made the system
+    worse. Every citation it emits is well formed - zero malformed tags against
+    one in v3 - but it stops citing altogether on 11 of 19 answerable questions,
+    against 3 for v3. Trading a one-question format defect for an eleven-question
+    attribution failure is a bad trade, and no wording tweak rescues it: the
+    worked example is what displaces the "cite every claim" rule.
+  lesson: >
+    The defect this prompt was written to fix was misdiagnosed. v3's citation
+    shortfall was mostly missing citations, not malformed ones; the malformed
+    tag was a single question. The fix targeted the smaller half of the problem
+    and regressed the larger half. Measure which half you are fixing first.

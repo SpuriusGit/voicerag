@@ -23,6 +23,10 @@ from voicerag.rag.pipeline import REFUSAL
 
 _WORD = re.compile(r"[a-z0-9Ѐ-ӿ]+")
 _CITATION = re.compile(r"\[S(\d+)\]")
+# What a model writes when it means to cite but gets the shape wrong. Without
+# these, an answer that cites badly is indistinguishable from one that does not
+# cite at all — two failures that need two different fixes.
+_MALFORMED_CITATION = re.compile(r"\[\d+\]|\(S?\d+\)|\[[Ss]ource\s*\d+\]|\[s\d+\]")
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 _STOPWORDS = {
@@ -80,12 +84,28 @@ def refusal_correct(answer: str, expects_refusal: bool) -> float:
     return float(is_refusal(answer) == expects_refusal)
 
 
-def citation_validity(answer: str, n_sources: int) -> float:
-    """Share of [Sn] tags that point at a source that was actually provided."""
-    tags = [int(t) for t in _CITATION.findall(answer)]
-    if not tags:
-        return 0.0
-    return sum(1 for t in tags if 1 <= t <= n_sources) / len(tags)
+def attempts_citation(answer: str) -> bool:
+    """True if the answer tried to cite at all, correctly or not."""
+    return bool(_CITATION.search(answer) or _MALFORMED_CITATION.search(answer))
+
+
+def citation_validity(answer: str, n_sources: int) -> float | None:
+    """Of the citations this answer attempted, the share that are usable.
+
+    Returns ``None`` when the answer made no attempt, so the metric measures
+    *citation quality* and stays independent of ``citation_rate``, which
+    measures *citation frequency*. Folding a missing citation into this number
+    as a zero made the two metrics numerically identical and hid the difference
+    between "cited the wrong thing" and "did not cite" — two failures with two
+    different fixes (see docs/EXPERIMENTS.md E7).
+    """
+    valid = [int(t) for t in _CITATION.findall(answer)]
+    malformed = _MALFORMED_CITATION.findall(answer)
+    attempted = len(valid) + len(malformed)
+    if not attempted:
+        return None
+    resolvable = sum(1 for t in valid if 1 <= t <= n_sources)
+    return resolvable / attempted
 
 
 def has_citation(answer: str) -> float:
@@ -141,11 +161,16 @@ def aggregate_answers(per_item: list[dict]) -> dict[str, float]:
         return sum(values) / len(values) if values else 0.0
 
     answerable = [r for r in per_item if not r["expects_refusal"]]
+    # citation_validity is averaged only over answers that attempted a citation,
+    # so it reports quality of attempts; citation_rate reports how often the model
+    # cited at all. Conflating them makes both numbers the same one.
+    attempted = [r for r in answerable if r.get("citation_validity") is not None]
     out = {
         "refusal_accuracy": mean("refusal_correct", per_item),
         "token_recall": mean("token_recall", answerable),
         "citation_rate": mean("has_citation", answerable),
-        "citation_validity": mean("citation_validity", answerable),
+        "citation_attempt_rate": mean("attempts_citation", answerable),
+        "citation_validity": mean("citation_validity", attempted),
         "mean_answer_words": mean("answer_words", per_item),
         "mean_latency_ms": mean("latency_ms", per_item),
     }

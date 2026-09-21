@@ -223,7 +223,8 @@ production retrieval stack, RTX 4060 Laptop 8 GB, 23 questions.
 | hit@4 (retrieval) | 1.000 | 1.000 | 1.000 |
 | **refusal accuracy** | 0.826 | 0.913 | **1.000** |
 | out-of-corpus refused | **0 / 4** | 4 / 4 | 4 / 4 |
-| citation validity | 0.000 | 0.737 | **0.842** |
+| citation rate | 0.000 | 0.737 | **0.842** |
+| citation validity | n/a | 1.000 | 0.941 |
 | faithfulness (judge) | 0.783 | *1.000* | 0.935 |
 | mean answer length | 114.7 words | 29.9 | **24.9** |
 | mean latency | 8915 ms | 3357 ms | **2427 ms** |
@@ -240,6 +241,14 @@ Two findings worth more than the table:
    the judge scores a refusal as fully supported — so refusing more *raises*
    faithfulness. Read alone, that metric would have promoted the wrong version.
    Faithfulness and refusal accuracy only mean something together.
+3. **A fourth version was written, measured and rejected.** `v4` showed the
+   citation format by example instead of describing it. It worked: zero
+   malformed tags, validity 1.000 against v3's 0.941 — and citation rate
+   collapsed from 0.895 to 0.37, because the model stopped attributing on more
+   than half the questions. It is kept in the repository as
+   `status: rejected` with its numbers. Writing the fix also exposed that the
+   defect had been misdiagnosed and that one of the two citation metrics was
+   measuring nothing ([E7](docs/EXPERIMENTS.md)).
 
 Each report embeds the configuration that produced it — prompt ref and hash,
 generator, judge, `top_k`/`top_n`, index size — so two runs are always
@@ -251,7 +260,11 @@ comparable. Raw reports: `runs/eval/real-v{1,2,3}.json`.
 prompts/rag_answer/v1.yaml   baseline, no grounding constraint  (deprecated)
 prompts/rag_answer/v2.yaml   + citations + refusal path         (superseded)
 prompts/rag_answer/v3.yaml   + language mirroring + length cap  (production)
+prompts/rag_answer/v4.yaml   + citation format by example       (rejected: see E7)
 ```
+
+The shipped version is **pinned**, never `@latest` — adding a file must not
+promote it, and v4 would otherwise have gone live the moment it was written.
 
 New wording means a new file, never an edit. Each version carries its rationale,
 a changelog and the command that evaluates it. Pin one per request with
@@ -362,8 +375,10 @@ tests/               79 tests, no GPU or network required
 - The judge is a 7B model grading a 3B one. It is independent of the generator,
   but it is not a human, and it scores refusals generously — see the v2 result.
   Use it for relative comparisons, never as an accuracy figure.
-- v3 occasionally emits `[1]` instead of `[S1]`, which is why citation validity
-  is 0.842 rather than 1.000. A v4 should show the tag format by example.
+- v3 leaves 3 of 19 answerable questions uncited and one of those carries a
+  malformed `[1]` tag. Prompt v4 fixed the format and made the attribution
+  worse, so it was rejected; the open problem is citation *frequency*, not
+  format.
 - The LoRA scripts are written for a GPU box and validated by dry-run and config
   parsing here; no adapter has been trained in this repository.
 - No streaming responses, no multi-tenant auth, no incremental re-indexing.

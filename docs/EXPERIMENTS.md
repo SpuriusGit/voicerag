@@ -203,7 +203,8 @@ voicerag compare runs/eval/real-v1.json runs/eval/real-v2.json runs/eval/real-v3
 | refusal accuracy | 0.826 | 0.913 | **1.000** |
 | out-of-corpus refused | 0 / 4 | 4 / 4 | 4 / 4 |
 | citation rate | 0.000 | 0.737 | **0.842** |
-| citation validity | 0.000 | 0.737 | **0.842** |
+| citation attempt rate | 0.000 | 0.737 | 0.895 |
+| citation validity | n/a | **1.000** | 0.941 |
 | faithfulness (judge) | 0.783 | *1.000* | 0.935 |
 | token recall | 0.648 | 0.553 | 0.587 |
 | mean answer words | 114.7 | 29.9 | **24.9** |
@@ -245,10 +246,13 @@ voicerag compare runs/eval/real-v1.json runs/eval/real-v2.json runs/eval/real-v3
    "not confirmed" costs nothing; pretending it worked would poison every later
    comparison.
 
-4. **Open defect: citation format drift.** v3's citation validity is 0.842,
-   not 1.000, because the model sometimes emits `[1]` instead of `[S1]` —
-   visible in q18. The metric is doing its job; the fix belongs in a v4 that
-   shows the tag format by example rather than describing it.
+4. **Open defect, misdiagnosed at first: v3 sometimes does not cite.** The
+   original reading of this table was "v3's citation validity is 0.842 because
+   it writes `[1]` instead of `[S1]`". That was wrong, and E7 explains how the
+   metric made it easy to get wrong. Of v3's 19 answerable questions, exactly
+   **one** carries a malformed tag (q18) and **two** carry no citation at all.
+   The format slip is the smaller half of the problem. Prompt v4 was written
+   against the wrong half and is recorded as rejected.
 
 **Caveats.** 23 questions: one item moves a mean by 0.043, so the v2↔v3
 faithfulness difference (0.065) is barely outside noise and should not be quoted
@@ -371,6 +375,79 @@ The first reading was noise, and a single run would have shipped it as a finding
 The uncomfortable version of this finding: **most of the answer-quality numbers
 elsewhere in this document are single-run measurements**, and this section is
 the reason to treat the small ones as indicative rather than settled.
+
+## E7 — A metric that could not tell two failures apart
+
+**Question.** Can a prompt be fixed by showing the citation format by example
+instead of describing it?
+
+**What was built.** `rag_answer@v4`: v3 verbatim, plus a worked example of
+sources mapping to a cited answer and an explicit list of shapes not to write
+(`[1]`, `(1)`, `[Source 1]`, `S1`). Roughly 530 extra characters of system
+prompt, changing nothing else, so any difference is attributable to that block.
+
+**Result** (`runs/eval/t0-v4-{a,b}.json` against `runs/eval/t0-v3-a.json`,
+temperature 0, gated retrieval, judge `qwen2.5:7b-instruct`):
+
+| | v3 | v4 run A | v4 run B |
+| --- | --- | --- | --- |
+| malformed tags | 1 of 19 | **0** | **0** |
+| answers with no citation | 3 of 19 | **11 of 19** | 13 of 19 |
+| citation rate | **0.895** | 0.421 | 0.316 |
+| citation validity | 0.944 | **1.000** | **1.000** |
+| refusal accuracy | **1.000** | 0.957 | 0.957 |
+| faithfulness | 0.978 | 1.000 | 1.000 |
+
+**v4 achieved its objective and made the system worse.** The format is now
+perfect — not one malformed tag across two runs — and the model simply stopped
+attributing on more than half the questions it answered. Trading a
+one-question format defect for an eleven-question attribution failure is a bad
+trade. v4 is marked `status: rejected` with these numbers in its own file.
+
+The likely mechanism is displacement: the format block is longer than the rules
+block it follows, and "cite every claim" stops being the most salient
+instruction. That is a hypothesis, not a measurement — a v5 that states the
+format in one line inside rule 2, rather than as a separate example, would test
+it.
+
+### The metric was hiding the distinction
+
+Reading the first v4 run, the old `citation_validity` reported **0.316** — which
+looks like a formatting catastrophe and is the opposite of what happened. The
+cause was in the metric, not the prompt:
+
+```python
+tags = _CITATION.findall(answer)
+if not tags:
+    return 0.0        # an answer with no citation scored as an invalid one
+```
+
+Folding "did not cite" into "cited invalidly" made the two numbers identical in
+every run ever recorded here — `citation_rate` and `citation_validity` were the
+same column twice, which is why nobody noticed one of them was meaningless.
+
+`citation_validity` now returns `None` when no citation was attempted and is
+averaged only over answers that tried, so it measures citation *quality*;
+`citation_rate` measures *frequency*; `citation_attempt_rate` sits between them
+and counts malformed attempts as attempts. Rescoring the stored answers — no
+model needed, the reports contain the text — gives the corrected history:
+
+| prompt | citation rate | attempt rate | validity (corrected) | validity (old) |
+| --- | --- | --- | --- | --- |
+| v1 | 0.000 | 0.000 | n/a — never attempted | 0.000 |
+| v2 | 0.737 | 0.737 | 1.000 | 0.737 |
+| v3 | 0.842 | 0.895 | 0.941 | 0.842 |
+| v4 | 0.421 | 0.421 | 1.000 | 0.421 |
+
+**Two lessons, both uncomfortable.**
+
+1. The defect was misdiagnosed before any prompt was written. v3's citation
+   shortfall was mostly *missing* citations; the malformed tag was one question
+   out of nineteen. The fix targeted the smaller half and regressed the larger
+   half. Splitting the metric first would have shown that in seconds.
+2. A metric that cannot separate two failure modes will eventually be used to
+   diagnose one of them. Both numbers looked healthy and mutually corroborating
+   precisely because they were the same number.
 
 ## Reproducing everything
 

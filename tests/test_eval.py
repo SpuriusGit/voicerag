@@ -53,8 +53,10 @@ def test_refusal_accuracy_penalises_both_directions():
 
 def test_citation_metrics():
     assert has_citation("8 GB [S1]") == 1.0
+    assert has_citation("8 GB, no tag") == 0.0
     assert citation_validity("uses [S1] and [S7]", n_sources=4) == 0.5
-    assert citation_validity("no tags", n_sources=4) == 0.0
+    # Previously 0.0: an answer with no citation was scored as an invalid one.
+    assert citation_validity("no tags", n_sources=4) is None
 
 
 def test_token_recall_ignores_stopwords():
@@ -124,3 +126,60 @@ def test_compare_reports_renders_a_markdown_table(pipeline, eval_set_path):
     b = evaluate(pipeline, items, run_id="run-b", sample_resources=False)
     table = compare_reports([a, b])
     assert "run-a" in table and "run-b" in table and "hit@4" in table
+
+
+def test_citation_validity_measures_quality_not_frequency():
+    """Validity is about the tags that exist; rate is about whether any exist.
+
+    Folding "no citation" into validity as a zero made the two metrics identical,
+    which hid that prompt v4 had perfect formatting and simply stopped citing
+    (docs/EXPERIMENTS.md E7).
+    """
+    from voicerag.eval.answer_metrics import attempts_citation, citation_validity
+
+    assert citation_validity("grounded [S1] and [S2]", 4) == 1.0
+    assert citation_validity("points outside the list [S9]", 4) == 0.0
+    assert citation_validity("half right [S1] half wrong [S9]", 4) == 0.5
+    # A malformed tag is an attempt that failed, not an absence.
+    assert citation_validity("Температура 0.1 [1].", 4) == 0.0
+    assert citation_validity("mixed [S1] and [1]", 4) == 0.5
+    # No attempt at all is not a validity failure; it is excluded.
+    assert citation_validity("a plain ungrounded sentence", 4) is None
+
+    assert attempts_citation("see [1]") is True
+    assert attempts_citation("see (2)") is True
+    assert attempts_citation("see [Source 3]") is True
+    assert attempts_citation("no tags here") is False
+
+
+def test_aggregate_separates_citation_rate_from_validity():
+    from voicerag.eval.answer_metrics import aggregate_answers
+
+    rows = [
+        # cites correctly
+        {
+            "expects_refusal": False,
+            "refusal_correct": 1.0,
+            "has_citation": 1.0,
+            "attempts_citation": 1.0,
+            "citation_validity": 1.0,
+            "answer_words": 10.0,
+            "latency_ms": 1.0,
+            "token_recall": 1.0,
+        },
+        # does not cite at all: drags the rate down, leaves validity untouched
+        {
+            "expects_refusal": False,
+            "refusal_correct": 1.0,
+            "has_citation": 0.0,
+            "attempts_citation": 0.0,
+            "citation_validity": None,
+            "answer_words": 10.0,
+            "latency_ms": 1.0,
+            "token_recall": 1.0,
+        },
+    ]
+    out = aggregate_answers(rows)
+    assert out["citation_rate"] == 0.5
+    assert out["citation_attempt_rate"] == 0.5
+    assert out["citation_validity"] == 1.0, "an absent citation must not count as invalid"

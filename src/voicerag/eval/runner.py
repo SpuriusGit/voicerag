@@ -19,6 +19,7 @@ from voicerag import __version__
 from voicerag.eval.answer_metrics import (
     FaithfulnessJudge,
     aggregate_answers,
+    attempts_citation,
     citation_validity,
     has_citation,
     refusal_correct,
@@ -149,6 +150,7 @@ def evaluate(
             "refusal_correct": refusal_correct(result.answer, item.expects_refusal),
             "token_recall": token_recall(result.answer, item.reference),
             "has_citation": has_citation(result.answer),
+            "attempts_citation": float(attempts_citation(result.answer)),
             "citation_validity": citation_validity(result.answer, len(result.sources)),
             "answer_words": float(len(result.answer.split())),
             "latency_ms": result.timings_ms.get("total", 0.0),
