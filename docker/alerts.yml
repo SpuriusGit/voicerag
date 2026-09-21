@@ -1,0 +1,33 @@
+groups:
+  - name: voicerag
+    rules:
+      - alert: HighAnswerLatency
+        expr: histogram_quantile(0.95, sum(rate(voicerag_stage_latency_seconds_bucket{stage="llm"}[5m])) by (le)) > 6
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 generation latency above 6s"
+          description: "Check context length, top_n, and whether the model fell back to CPU."
+
+      - alert: GPUMemoryNearLimit
+        expr: max(voicerag_gpu_memory_used_bytes) / 1024 / 1024 > 7500
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "GPU memory above 7.5 GB on an 8 GB card"
+          description: "Reduce top_n or move the reranker to CPU before OOM during generation."
+
+      - alert: SlowTranscription
+        expr: histogram_quantile(0.95, sum(rate(voicerag_stt_real_time_factor_bucket[10m])) by (le)) > 0.6
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "STT real-time factor above 0.6"
+          description: "Whisper likely running on CPU, or the model size was increased."
+
+      - alert: ErrorRateElevated
+        expr: sum(rate(voicerag_errors_total[5m])) > 0.2
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "Pipeline errors above 0.2/s"

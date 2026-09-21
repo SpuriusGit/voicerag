@@ -1,0 +1,103 @@
+# Full local stack: model server + API + metrics.
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#   docker compose -f docker/docker-compose.yml exec ollama ollama pull qwen2.5:3b-instruct
+#
+# GPU: use the `gpu` profile instead of the default `api` service.
+
+name: voicerag
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      VOICERAG_LLM__BACKEND: ollama
+      VOICERAG_LLM__BASE_URL: http://ollama:11434
+      VOICERAG_LLM__MODEL: qwen2.5:3b-instruct
+      # CPU image: no cross-encoder, and the embedder stays small.
+      VOICERAG_RAG__EMBEDDER: sentence_transformers
+      VOICERAG_RAG__EMBEDDING_MODEL: intfloat/multilingual-e5-small
+      VOICERAG_RAG__RERANKER: noop
+      VOICERAG_STT__BACKEND: stub
+      VOICERAG_SERVICE__LOG_LEVEL: INFO
+    volumes:
+      - index:/app/storage
+      - ../data/corpus:/app/data/corpus:ro
+      - ../prompts:/app/prompts:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-gpu:
+    profiles: ["gpu"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    ports: ["8000:8000"]
+    environment:
+      VOICERAG_LLM__BACKEND: ollama
+      VOICERAG_LLM__BASE_URL: http://ollama:11434
+      VOICERAG_LLM__MODEL: qwen2.5:3b-instruct
+      VOICERAG_RAG__RERANKER: cross_encoder
+      VOICERAG_STT__BACKEND: faster_whisper
+      VOICERAG_STT__MODEL: small
+    volumes:
+      - index:/app/storage
+      - hf-cache:/app/models
+      - ../data/corpus:/app/data/corpus:ro
+      - ../prompts:/app/prompts:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  ollama-models:
+  index:
+  hf-cache:
+  prometheus-data:
+  grafana-data:
