@@ -8,7 +8,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
+from fastapi.staticfiles import StaticFiles
 
 from voicerag import __version__
 from voicerag.api.deps import get_pipeline, get_stt
@@ -32,6 +39,8 @@ from voicerag.stt.audio import AudioError
 from voicerag.stt.base import BaseSTT
 
 log = get_logger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac", ".opus", ".mp4"}
 
@@ -103,6 +112,19 @@ async def _audio_error(_request: Request, exc: AudioError) -> JSONResponse:
     return JSONResponse(
         status_code=415, content={"detail": str(exc), "request_id": get_request_id()}
     )
+
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index() -> Response:
+    """The browser UI. Falls back to the OpenAPI docs if the page is missing."""
+    page = STATIC_DIR / "index.html"
+    if not page.is_file():
+        return RedirectResponse("/docs")
+    return FileResponse(page, media_type="text/html")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["ops"])

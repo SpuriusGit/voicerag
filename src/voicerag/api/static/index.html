@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceRAG</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --border: #e4e2dd; --text: #1a1a18;
+    --muted: #6b6862; --accent: #2f6f4e; --accent-soft: #e8f2ec;
+    --warn: #8a6100; --warn-soft: #fdf3dc; --code: #f4f3f0;
+    --s-embed: #8fb8d8; --s-search: #a8cfae; --s-rerank: #e0c188; --s-llm: #b79ccc;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17171a; --panel: #1f1f23; --border: #32323a; --text: #e9e8e4;
+      --muted: #9a978f; --accent: #7cc39a; --accent-soft: #1e2f26;
+      --warn: #e0b95f; --warn-soft: #302713; --code: #26262b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 4px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+  .pill {
+    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 10px; color: var(--muted);
+  }
+  .pill.ok { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .pill.bad { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  textarea, select, input[type=file] {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+  }
+  textarea { resize: vertical; min-height: 74px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
+  button {
+    font: inherit; font-weight: 550; cursor: pointer; border-radius: 8px;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+    padding: 9px 16px;
+  }
+  button.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.rec { border-color: #b4483f; background: #b4483f; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-size: 12.5px; cursor: pointer; background: var(--code); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+  .answer { font-size: 16.5px; line-height: 1.6; white-space: pre-wrap; margin: 2px 0 14px; }
+  .answer.refused { color: var(--warn); }
+  .cite {
+    font: 11.5px/1 ui-monospace, monospace; vertical-align: super; cursor: pointer;
+    background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent);
+    border-radius: 5px; padding: 2px 4px; margin: 0 1px;
+  }
+  .meta {
+    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted); border-top: 1px solid var(--border); padding-top: 10px;
+  }
+  .bar { display: flex; height: 9px; border-radius: 999px; overflow: hidden; margin: 12px 0 8px; background: var(--code); }
+  .bar span { display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font: 11.5px ui-monospace, monospace; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+  .src { border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow: hidden; }
+  .src.cited { border-color: var(--accent); }
+  .src.flash { animation: flash 1.1s ease-out; }
+  @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
+  .src summary {
+    cursor: pointer; padding: 9px 12px; display: flex; flex-wrap: wrap;
+    gap: 8px; align-items: baseline; font-size: 13.5px;
+  }
+  .src .path { font: 12.5px ui-monospace, monospace; }
+  .src .head { color: var(--muted); font-size: 12px; flex: 1 1 auto; }
+  .src .score { font: 11.5px ui-monospace, monospace; color: var(--muted); }
+  .badge {
+    font: 10.5px/1 ui-monospace, monospace; text-transform: uppercase; letter-spacing: .04em;
+    background: var(--accent-soft); color: var(--accent); border-radius: 4px; padding: 3px 5px;
+  }
+  .src p { margin: 0; padding: 0 12px 12px; font-size: 13.5px; color: var(--muted); white-space: pre-wrap; }
+  .err { color: #b4483f; font-size: 13.5px; }
+  .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 28px; }
+  footer a { color: var(--accent); }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--border);
+          border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 560px) { .wrap { padding: 16px 16px 48px; } h1 { font-size: 19px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>VoiceRAG</h1></header>
+  <p class="sub">Ask the indexed corpus by text or voice. Answers are grounded in retrieved
+     chunks, cite their sources, and refuse when the corpus cannot support them.</p>
+
+  <div class="pills" id="pills"><span class="pill">connecting…</span></div>
+
+  <div class="panel">
+    <label for="q">Question</label>
+    <textarea id="q" placeholder="How much VRAM does an RTX 4060 laptop GPU have?"></textarea>
+    <div class="chips" id="examples"></div>
+    <div class="row">
+      <button id="ask">Ask</button>
+      <select id="prompt" style="width:auto"><option value="">prompt: default</option></select>
+      <span id="askState" class="hint"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label>Voice</label>
+    <div class="row">
+      <button id="rec" class="ghost">● Record</button>
+      <button id="pick" class="ghost">Upload audio…</button>
+      <input id="file" type="file" accept="audio/*" hidden>
+      <span id="voiceState" class="hint"></span>
+    </div>
+    <div class="hint">Recording is encoded to 16 kHz mono WAV in the browser, so the server
+      needs no ffmpeg. Uploaded mp3/m4a/webm files do require it.</div>
+    <div id="transcript" class="meta" style="display:none"></div>
+  </div>
+
+  <div id="out"></div>
+
+  <footer>
+    <a href="/docs">API docs</a> · <a href="/metrics">metrics</a> ·
+    <a href="/prompts">prompts</a> · <a href="/health">health</a>
+  </footer>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const STAGES = [["embed","--s-embed"],["search","--s-search"],["rerank","--s-rerank"],["llm","--s-llm"]];
+const EXAMPLES = [
+  "How much VRAM does an RTX 4060 laptop GPU have?",
+  "Why is BM25 used together with dense embeddings?",
+  "Скільки відеопам'яті потрібно для моделі small?",
+  "What is the capital of Australia?",
+];
+
+function esc(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+async function boot() {
+  EXAMPLES.forEach(t => {
+    const c = document.createElement("span");
+    c.className = "chip"; c.textContent = t.length > 46 ? t.slice(0, 44) + "…" : t;
+    c.title = t;
+    c.onclick = () => { $("#q").value = t; $("#q").focus(); };
+    $("#examples").append(c);
+  });
+  try {
+    const h = await (await fetch("/health")).json();
+    const gpu = (h.resources.gpus || [])[0];
+    $("#pills").innerHTML = [
+      `<span class="pill ${h.status === "ok" ? "ok" : "bad"}">${h.status}</span>`,
+      `<span class="pill">${h.index.chunks ?? "?"} chunks · ${h.index.sources ?? "?"} docs</span>`,
+      `<span class="pill">${esc(h.index.embedder || "—")}</span>`,
+      `<span class="pill ${h.llm.reachable ? "" : "bad"}">${esc(h.llm.model)}</span>`,
+      gpu ? `<span class="pill">GPU ${Math.round(gpu.memory_used_mb)}/${Math.round(gpu.memory_total_mb)} MB</span>` : "",
+    ].join("");
+  } catch { $("#pills").innerHTML = '<span class="pill bad">service unreachable</span>'; }
+
+  try {
+    const rows = await (await fetch("/prompts")).json();
+    rows.filter(r => r.name === "rag_answer").forEach(r => {
+      const o = document.createElement("option");
+      o.value = r.ref;
+      o.textContent = `prompt: ${r.ref}${r.is_latest ? " (latest)" : ""}`;
+      $("#prompt").append(o);
+    });
+  } catch {}
+}
+
+function render(d) {
+  const cited = new Set((d.sources || []).map((s, i) => s.cited ? i + 1 : 0));
+  const answer = esc(d.answer).replace(/\[S(\d+)\]/g,
+    (_, n) => `<span class="cite" data-n="${n}" title="jump to source ${n}">S${n}</span>`);
+
+  const t = d.timings_ms || {};
+  const total = STAGES.reduce((a, [k]) => a + (t[k] || 0), 0) || 1;
+  const bar = STAGES.map(([k, v]) =>
+    `<span style="width:${((t[k] || 0) / total * 100).toFixed(2)}%;background:var(${v})"></span>`).join("");
+  const legend = STAGES.map(([k, v]) =>
+    `<span><i style="background:var(${v})"></i>${k} ${Math.round(t[k] || 0)}ms</span>`).join("");
+
+  const sources = (d.sources || []).map((s, i) => `
+    <details class="src ${s.cited ? "cited" : ""}" id="src-${i + 1}">
+      <summary>
+        <span class="path">[S${i + 1}] ${esc(s.source)}</span>
+        <span class="head">${esc(s.text.split("\n")[0].slice(0, 58))}</span>
+        <span class="score">${s.rerank_score != null ? "rr " + s.rerank_score.toFixed(3) : "s " + s.score.toFixed(3)}</span>
+        ${s.cited ? '<span class="badge">cited</span>' : ""}
+      </summary>
+      <p>${esc(s.text)}</p>
+    </details>`).join("");
+
+  $("#out").innerHTML = `
+    <div class="panel">
+      <div class="answer ${d.refused ? "refused" : ""}">${answer}</div>
+      <div class="bar">${bar}</div>
+      <div class="legend">${legend}<span><b>total ${Math.round(t.total || total)}ms</b></span></div>
+      <div class="meta" style="margin-top:12px">
+        ${esc(d.prompt.ref)} · sha ${esc(d.prompt.sha256)} · ${esc(d.model)}
+        ${d.usage && d.usage.tokens_per_second ? " · " + d.usage.tokens_per_second + " tok/s" : ""}
+        · request ${esc(d.request_id)}
+      </div>
+    </div>
+    <div class="panel">
+      <label>Retrieved sources — ${cited.size - (cited.has(0) ? 1 : 0)} of ${(d.sources || []).length} cited</label>
+      ${sources || '<p class="hint">Nothing retrieved.</p>'}
+    </div>`;
+
+  document.querySelectorAll(".cite").forEach(c => c.onclick = () => {
+    const el = document.getElementById("src-" + c.dataset.n);
+    if (!el) return;
+    el.open = true;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  });
+}
+
+async function ask() {
+  const question = $("#q").value.trim();
+  if (!question) return;
+  $("#ask").disabled = true;
+  $("#askState").innerHTML = '<span class="spin"></span> thinking…';
+  const started = performance.now();
+  try {
+    const body = { question };
+    if ($("#prompt").value) body.prompt_ref = $("#prompt").value;
+    const r = await fetch("/ask", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    render(d);
+    $("#askState").textContent = `${Math.round(performance.now() - started)} ms round trip`;
+  } catch (e) {
+    $("#out").innerHTML = `<div class="panel err">${esc(String(e.message || e))}</div>`;
+    $("#askState").textContent = "";
+  } finally { $("#ask").disabled = false; }
+}
+
+// ---- microphone -> 16 kHz mono WAV, encoded client side (no ffmpeg needed) ----
+let ctx, node, stream, chunks = [], recording = false;
+
+function encodeWav(samples, rate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buf);
+  const str = (o, s) => [...s].forEach((c, i) => view.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); view.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVEfmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, "data"); view.setUint32(40, samples.length * 2, true);
+  samples.forEach((s, i) => {
+    const v = Math.max(-1, Math.min(1, s));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  });
+  return new Blob([view], { type: "audio/wav" });
+}
+
+function downsample(input, from, to) {
+  if (to >= from) return input;
+  const ratio = from / to, out = new Float32Array(Math.round(input.length / ratio));
+  for (let i = 0; i < out.length; i++) {
+    const start = Math.round(i * ratio), end = Math.min(Math.round((i + 1) * ratio), input.length);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += input[j];
+    out[i] = sum / Math.max(end - start, 1);
+  }
+  return out;
+}
+
+$("#rec").onclick = async () => {
+  if (recording) {
+    recording = false;
+    $("#rec").classList.remove("rec"); $("#rec").textContent = "● Record";
+    node.disconnect(); stream.getTracks().forEach(t => t.stop());
+    const flat = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+    let off = 0; chunks.forEach(c => { flat.set(c, off); off += c.length; });
+    await ctx.close();
+    if (flat.length < 1600) { $("#voiceState").textContent = "too short"; return; }
+    send(encodeWav(downsample(flat, ctx.sampleRate, 16000), 16000), "recording.wav");
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  } catch (e) { $("#voiceState").innerHTML = '<span class="err">microphone denied</span>'; return; }
+  ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  node = ctx.createScriptProcessor(4096, 1, 1);
+  chunks = []; recording = true;
+  node.onaudioprocess = e => { if (recording) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  src.connect(node); node.connect(ctx.destination);
+  $("#rec").classList.add("rec"); $("#rec").textContent = "■ Stop";
+  $("#voiceState").textContent = "recording…";
+};
+
+$("#pick").onclick = () => $("#file").click();
+$("#file").onchange = e => { if (e.target.files[0]) send(e.target.files[0], e.target.files[0].name); };
+
+async function send(blob, name) {
+  $("#voiceState").innerHTML = '<span class="spin"></span> transcribing…';
+  const fd = new FormData();
+  fd.append("file", blob, name);
+  if ($("#prompt").value) fd.append("prompt_ref", $("#prompt").value);
+  try {
+    const r = await fetch("/voice-ask", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    const t = d.transcript;
+    $("#q").value = t.text;
+    $("#transcript").style.display = "block";
+    $("#transcript").textContent =
+      `heard: "${t.text}" — ${t.language}, ${t.duration_s}s audio, ` +
+      `rtf ${t.real_time_factor}, confidence ${t.mean_confidence}`;
+    $("#voiceState").textContent = "";
+    render(d);
+  } catch (e) {
+    $("#voiceState").innerHTML = `<span class="err">${esc(String(e.message || e))}</span>`;
+  }
+}
+
+$("#ask").onclick = ask;
+$("#q").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(); });
+boot();
+</script>
+</body>
+</html>

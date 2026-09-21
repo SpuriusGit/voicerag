@@ -10,7 +10,11 @@ def registry(prompts_dir):
 
 def test_all_prompt_versions_load(registry):
     assert "rag_answer" in registry.names()
-    assert registry.versions("rag_answer") == [1, 2, 3]
+    versions = registry.versions("rag_answer")
+    # Contiguous from 1: a gap means a version file was deleted rather than
+    # superseded, which breaks the audit trail every recorded run depends on.
+    assert versions == list(range(1, len(versions) + 1))
+    assert len(versions) >= 3
 
 
 def test_latest_resolves_to_highest_version(registry):

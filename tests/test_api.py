@@ -99,3 +99,33 @@ def test_openapi_schema_is_served(client):
     schema = client.get("/openapi.json").json()
     assert "/voice-ask" in schema["paths"]
     assert "/metrics" in schema["paths"]
+
+
+def test_root_serves_the_browser_ui(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    body = response.text
+    assert "<title>VoiceRAG</title>" in body
+    # The page drives these endpoints; a rename must fail here, not in the browser.
+    for endpoint in ("/ask", "/voice-ask", "/health", "/prompts"):
+        assert endpoint in body
+
+
+def test_ui_is_packaged_with_the_module():
+    """The page must ship inside the installed package, or Docker serves nothing."""
+    from pathlib import Path
+
+    import voicerag.api.main as main
+
+    assert (Path(main.__file__).parent / "static" / "index.html").is_file()
+    assert main.STATIC_DIR.is_dir()
+
+
+def test_static_assets_are_mounted(client):
+    assert client.get("/static/index.html").status_code == 200
+
+
+def test_ui_is_absent_from_the_openapi_schema(client):
+    """The UI is not an API surface; keeping it out of the schema keeps /docs honest."""
+    assert "/" not in client.get("/openapi.json").json()["paths"]
