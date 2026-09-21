@@ -1,0 +1,15 @@
+# ---- heavy ML stack (GPU box / docker gpu image) ----
+# Install AFTER requirements.txt:  pip install -r requirements-ml.txt
+torch==2.5.1
+transformers==4.48.0
+sentence-transformers==3.3.1
+faiss-cpu==1.9.0.post1
+accelerate==1.2.1
+peft==0.14.0
+bitsandbytes==0.45.0
+datasets==3.2.0
+trl==0.13.0
+faster-whisper==1.1.1
+soundfile==0.13.0
+librosa==0.10.2.post1
+jiwer==3.1.0

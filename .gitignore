@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Local artifacts
+.env
+storage/
+outputs/
+runs/
+models/
+data/audio/*
+!data/audio/.gitkeep
+*.npz
+*.wav
+*.mp3
+*.m4a
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Generated training data (rebuild with: make finetune-data)
+data/finetune/
