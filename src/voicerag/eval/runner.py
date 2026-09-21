@@ -123,7 +123,12 @@ def evaluate(
     if sampler:
         sampler.start()
 
+    # Two passes, not one interleaved loop: the generator and the judge are
+    # usually different models, and alternating between them evicts one from GPU
+    # memory on every single item. Generating everything first keeps each model
+    # loaded exactly once.
     per_item: list[dict] = []
+    contexts: list[str] = []
     for index, item in enumerate(items, start=1):
         result = pipeline.answer(item.question, prompt_ref=template.ref)
         retrieved_sources: list[str] = []
@@ -151,19 +156,22 @@ def evaluate(
             "judge_reason": "",
         }
 
-        if judge is not None:
+        per_item.append(row)
+        contexts.append(pipeline.build_context(result.sources))
+        log.info(
+            "answered", n=f"{index}/{len(items)}", id=item.id, refusal_ok=row["refusal_correct"]
+        )
+
+    if judge is not None:
+        for index, (item, row, context) in enumerate(
+            zip(items, per_item, contexts, strict=True), start=1
+        ):
             verdict = judge.score(
-                question=item.question,
-                context=pipeline.build_context(result.sources),
-                answer=result.answer,
+                question=item.question, context=context, answer=str(row["answer"])
             )
             row["faithfulness"] = verdict.score
             row["judge_reason"] = verdict.reason
-
-        per_item.append(row)
-        log.info(
-            "eval_item", n=f"{index}/{len(items)}", id=item.id, refusal_ok=row["refusal_correct"]
-        )
+            log.info("judged", n=f"{index}/{len(items)}", id=item.id, score=verdict.score)
 
     if sampler:
         sampler.stop()
@@ -181,7 +189,7 @@ def evaluate(
             "top_k": retriever.top_k,
             "top_n": retriever.top_n,
             "chunks_indexed": len(retriever.store),
-            "judge": "on" if judge else "off",
+            "judge": judge.llm.model if judge else "off",
             "python": platform.python_version(),
         },
         retrieval=aggregate_retrieval(per_item),

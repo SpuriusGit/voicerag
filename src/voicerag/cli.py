@@ -178,6 +178,14 @@ def run_eval(
     out: Path = Path("runs/eval"),
     prompt_ref: str | None = typer.Option(None, "--prompt"),
     judge: bool = typer.Option(False, "--judge", help="Enable LLM-as-a-judge faithfulness scoring"),
+    judge_model: str | None = typer.Option(
+        None,
+        "--judge-model",
+        help=(
+            "Grade with a different model than the one being evaluated. Strongly "
+            "recommended: a model judging its own output is biased in its own favour."
+        ),
+    ),
     run_id: str | None = None,
     limit: int | None = None,
 ) -> None:
@@ -185,15 +193,27 @@ def run_eval(
     from voicerag.eval.answer_metrics import FaithfulnessJudge
     from voicerag.eval.dataset import load_eval_set
     from voicerag.eval.runner import evaluate
+    from voicerag.llm.factory import build_llm
     from voicerag.rag.pipeline import RAGPipeline
 
-    pipeline = RAGPipeline.from_settings()
+    settings = get_settings()
+    pipeline = RAGPipeline.from_settings(settings)
     items = load_eval_set(dataset)[: limit or None]
-    grader = (
-        FaithfulnessJudge(pipeline.llm, pipeline.prompts, get_settings().prompts.judge)
-        if judge
-        else None
-    )
+
+    grader = None
+    if judge:
+        judge_llm = pipeline.llm
+        if judge_model and judge_model != pipeline.llm.model:
+            judge_llm = build_llm(settings.llm.model_copy(update={"model": judge_model}))
+            console.print(
+                f"Judging with [cyan]{judge_model}[/cyan] (generator: {pipeline.llm.model})"
+            )
+        else:
+            console.print(
+                "[yellow]Warning:[/yellow] the generator is grading its own answers. "
+                "Pass --judge-model for an independent grader."
+            )
+        grader = FaithfulnessJudge(judge_llm, pipeline.prompts, settings.prompts.judge)
     console.print(f"Evaluating {len(items)} items ...")
     report = evaluate(pipeline, items, judge=grader, prompt_ref=prompt_ref, run_id=run_id)
     path = report.save(out)
