@@ -34,10 +34,25 @@ user: |
 
   Answer:
 eval:
-  harness: "voicerag eval --prompt rag_answer@v3 --judge"
+  harness: "voicerag eval --judge --judge-model qwen2.5:7b-instruct --prompt rag_answer@v3"
   dataset: data/eval/qa.jsonl
-  recorded: null
-  targets:
-    - faithfulness must not regress against v2
-    - answers to uk questions must come back in Ukrainian
-    - mean_answer_words below 120
+  recorded:
+    date: 2026-09-21
+    generator: qwen2.5:3b-instruct (ollama, q4)
+    judge: qwen2.5:7b-instruct
+    retrieval: multilingual-e5-small + BM25 (RRF) + bge-reranker-v2-m3, top_k=20 top_n=4
+    hardware: RTX 4060 Laptop 8GB
+    report: runs/eval/real-v3.json
+    metrics:
+      refusal_accuracy: 1.000
+      out_of_corpus_refusal_rate: 1.000
+      faithfulness: 0.935
+      citation_rate: 0.842
+      citation_validity: 0.842
+      mean_answer_words: 24.9
+      mean_latency_ms: 2427
+  finding: >
+    Production choice. Refuses exactly the 4 unanswerable questions and no
+    others, cites more often than v2, and is 28% faster because the length cap
+    holds answers near 25 words. Its lower faithfulness than v2 is an artefact
+    of v2 refusing more - read the two metrics together, never alone.

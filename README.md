@@ -139,8 +139,16 @@ in seconds; the ranking of the variants is what matters, not the absolute values
 
 Adding BM25 to dense retrieval is worth 5 points of hit@4 and 8 of MRR on this
 corpus. Over-splitting (400-char chunks) hurts: it fragments the passage that
-answers the question. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method,
-caveats and the metrics that still need a real LLM to fill in.
+answers the question.
+
+With the **production stack** — `multilingual-e5-small` + BM25 + the
+`bge-reranker-v2-m3` cross-encoder — the same 19 questions come back at
+`hit@4 = 1.000` and `MRR = 1.000`. That is a saturated metric, not a victory
+lap: 6 documents and 19 questions are simply too easy for a real embedder, so
+retrieval numbers can no longer discriminate between configurations and the
+honest next step is a harder eval set. The zero-dependency table above is kept
+precisely because it still separates the variants.
+See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method and caveats.
 
 ## Answer quality
 
@@ -155,13 +163,45 @@ Three layers, because each catches something the others miss:
   graded by a versioned judge prompt at temperature 0.
 
 ```bash
-voicerag eval --judge --prompt rag_answer@v2 --run-id v2
-voicerag eval --judge --prompt rag_answer@v3 --run-id v3
-voicerag compare runs/eval/v2.json runs/eval/v3.json
+voicerag eval --judge --judge-model qwen2.5:7b-instruct --prompt rag_answer@v3 --run-id v3
+voicerag compare runs/eval/real-v1.json runs/eval/real-v2.json runs/eval/real-v3.json
 ```
 
+The generator is graded by a **different** model than the one being evaluated —
+a model judging its own answers is biased in its own favour, and the CLI warns
+when no separate grader is given.
+
+### Measured: what each prompt version actually changed
+
+Generator `qwen2.5:3b-instruct` (q4, Ollama), judge `qwen2.5:7b-instruct`,
+production retrieval stack, RTX 4060 Laptop 8 GB, 23 questions.
+
+| metric | v1 baseline | v2 + citations/refusal | v3 production |
+| --- | --- | --- | --- |
+| hit@4 (retrieval) | 1.000 | 1.000 | 1.000 |
+| **refusal accuracy** | 0.826 | 0.913 | **1.000** |
+| out-of-corpus refused | **0 / 4** | 4 / 4 | 4 / 4 |
+| citation validity | 0.000 | 0.737 | **0.842** |
+| faithfulness (judge) | 0.783 | *1.000* | 0.935 |
+| mean answer length | 114.7 words | 29.9 | **24.9** |
+| mean latency | 8915 ms | 3357 ms | **2427 ms** |
+
+Two findings worth more than the table:
+
+1. **v1 hallucinated exactly as predicted.** With no grounding constraint it
+   answered all four unanswerable questions from parametric memory — including
+   a flat *"The capital of Australia is Canberra."* Retrieval was identical
+   across all three versions, so the failure is purely generation-side. This is
+   what the `out_of_corpus` rows in the eval set exist to catch.
+2. **v2 scores a perfect 1.000 faithfulness and is still the worse prompt.**
+   It over-refuses answerable questions (multi-hop refusal accuracy 0.667), and
+   the judge scores a refusal as fully supported — so refusing more *raises*
+   faithfulness. Read alone, that metric would have promoted the wrong version.
+   Faithfulness and refusal accuracy only mean something together.
+
 Each report embeds the configuration that produced it — prompt ref and hash,
-models, `top_k`/`top_n`, index size — so two runs are always comparable.
+generator, judge, `top_k`/`top_n`, index size — so two runs are always
+comparable. Raw reports: `runs/eval/real-v{1,2,3}.json`.
 
 ## Prompts are versioned like code
 
@@ -244,11 +284,16 @@ tests/               79 tests, no GPU or network required
 
 ## Known limitations
 
-- The corpus is a small synthetic handbook (6 documents, 22 chunks). Metrics on
-  it are directional; the harness, not the numbers, is the deliverable.
-- Faithfulness and refusal metrics need a real local LLM; with the echo backend
-  they are structurally zero. `recorded: null` in the prompt files means exactly
-  that — no number has been measured yet on that axis, and none was invented.
+- The corpus is a small synthetic handbook (6 documents, 22 chunks). With a real
+  embedder the retrieval metrics saturate at 1.000, so they can no longer rank
+  configurations — the eval set needs to get harder before it can. The harness,
+  not the numbers, is the deliverable.
+- 23 questions is a small sample: one item moves a per-item mean by 0.043, so
+  differences under ~0.05 are noise. The v1→v3 refusal gap (0 / 4 versus 4 / 4)
+  is far outside that band; the v2↔v3 faithfulness gap is not.
+- The judge is a 7B model grading a 3B one. It is independent of the generator,
+  but it is not a human, and it scores refusals generously — see the v2 result.
+  Use it for relative comparisons, never as an accuracy figure.
 - The LoRA scripts are written for a GPU box and validated by dry-run and config
   parsing here; no adapter has been trained in this repository.
 - No streaming responses, no multi-tenant auth, no incremental re-indexing.

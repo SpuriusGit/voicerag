@@ -17,10 +17,24 @@ user: |
 
   Question: {{ question }}
 eval:
-  harness: "voicerag eval --prompt rag_answer@v1 --judge"
+  harness: "voicerag eval --judge --judge-model qwen2.5:7b-instruct --prompt rag_answer@v1"
   dataset: data/eval/qa.jsonl
-  recorded: null   # baseline kept for comparison; re-run the harness on your own backend
-  expected_weakness: >
-    No grounding constraint and no refusal path, so out-of-corpus questions
-    (type=out_of_corpus in the eval set) get answered from parametric memory.
-    refusal_accuracy is the metric that exposes this.
+  recorded:
+    date: 2026-09-21
+    generator: qwen2.5:3b-instruct (ollama, q4)
+    judge: qwen2.5:7b-instruct
+    retrieval: multilingual-e5-small + BM25 (RRF) + bge-reranker-v2-m3, top_k=20 top_n=4
+    hardware: RTX 4060 Laptop 8GB
+    report: runs/eval/real-v1.json
+    metrics:
+      refusal_accuracy: 0.826
+      out_of_corpus_refusal_rate: 0.000   # answered all 4 unanswerable questions
+      faithfulness: 0.783
+      citation_rate: 0.000
+      mean_answer_words: 114.7
+      mean_latency_ms: 8915
+  finding: >
+    Confirmed the predicted failure: with no grounding constraint the model
+    answered every out-of-corpus question from parametric memory, including
+    "The capital of Australia is Canberra." Retrieval was identical to v2/v3
+    (hit@4 = 1.000), so the failure is entirely generation-side.

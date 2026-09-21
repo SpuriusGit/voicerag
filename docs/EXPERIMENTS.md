@@ -69,30 +69,79 @@ reranker is pure latency.
 
 **Question.** What did each prompt revision actually change?
 
-**Status: partially measurable without an LLM.** Retrieval metrics are identical
-across prompt versions by construction (the prompt does not influence
-retrieval). Refusal accuracy, faithfulness and citation validity need a real
-generator; with the echo backend they are structurally zero.
+**Method.** All three versions evaluated on the same 23 questions with the same
+retrieval stack, so the prompt is the only variable. Generator
+`qwen2.5:3b-instruct` (q4, Ollama); grader `qwen2.5:7b-instruct` — deliberately
+a different model, because one grading its own output is biased in its favour.
 
 ```bash
-voicerag eval --judge --prompt rag_answer@v1 --run-id v1
-voicerag eval --judge --prompt rag_answer@v2 --run-id v2
-voicerag eval --judge --prompt rag_answer@v3 --run-id v3
-voicerag compare runs/eval/v1.json runs/eval/v2.json runs/eval/v3.json
+for V in v1 v2 v3; do
+  voicerag eval --judge --judge-model qwen2.5:7b-instruct \
+      --prompt "rag_answer@$V" --run-id "real-$V"
+done
+voicerag compare runs/eval/real-v1.json runs/eval/real-v2.json runs/eval/real-v3.json
 ```
 
-**Hypotheses being tested** (recorded before running, which is the point):
+**Setup.** 2026-09-21, RTX 4060 Laptop 8 GB, `multilingual-e5-small` + BM25 +
+`bge-reranker-v2-m3`, `top_k=20`, `top_n=4`, 22 chunks.
 
-| version | change | expected effect | metric that would show it |
+| metric | v1 | v2 | v3 |
 | --- | --- | --- | --- |
-| v1 → v2 | numbered sources, mandatory refusal sentence | fewer answers to the 4 out-of-corpus questions | `refusal_accuracy` |
-| v1 → v2 | inline `[Sn]` citations | citations appear and point at provided sources | `citation_rate`, `citation_validity` |
-| v2 → v3 | answer in the question's language | the 4 Ukrainian questions answered in Ukrainian | manual review of `runs/eval/*.json` |
-| v2 → v3 | ~120-word cap | shorter answers, no faithfulness loss | `mean_answer_words`, `faithfulness` |
+| hit@4 / MRR | 1.000 | 1.000 | 1.000 |
+| refusal accuracy | 0.826 | 0.913 | **1.000** |
+| out-of-corpus refused | 0 / 4 | 4 / 4 | 4 / 4 |
+| citation rate | 0.000 | 0.737 | **0.842** |
+| citation validity | 0.000 | 0.737 | **0.842** |
+| faithfulness (judge) | 0.783 | *1.000* | 0.935 |
+| token recall | 0.648 | 0.553 | 0.587 |
+| mean answer words | 114.7 | 29.9 | **24.9** |
+| mean latency | 8915 ms | 3357 ms | **2427 ms** |
+| run duration | 354 s | 218 s | 180 s |
 
-If v3 lowers faithfulness relative to v2, the length cap is too aggressive and
-v2 stays in production. The prompt files carry `recorded: null` until these runs
-happen — a deliberately visible reminder that no number has been invented.
+**Hypotheses, recorded before the run, and what actually happened:**
+
+| change | expected | outcome |
+| --- | --- | --- |
+| v1 → v2: numbered sources + refusal sentence | fewer answers to the 4 unanswerable questions | **confirmed** — 0/4 refused becomes 4/4 |
+| v1 → v2: inline `[Sn]` citations | citations appear and resolve | **confirmed** — 0.000 → 0.737 |
+| v2 → v3: answer in the question's language | the Ukrainian questions answered in Ukrainian | **not confirmed** — see below |
+| v2 → v3: ~120-word cap | shorter answers, no faithfulness loss | **confirmed on length** (29.9 → 24.9 words), faithfulness discussed below |
+
+**Findings.**
+
+1. **v1 hallucinated exactly as predicted.** It answered every out-of-corpus
+   question from parametric memory, most bluntly *"The capital of Australia is
+   Canberra."* Retrieval was identical to v2 and v3, so nothing about the
+   failure was retrieval-side. Its 114.7-word answers also made it 3.7× slower
+   than v3 — a grounding constraint bought accuracy *and* latency.
+
+2. **A perfect faithfulness score picked the wrong prompt.** v2 scores 1.000,
+   v3 scores 0.935, and v3 is still the better prompt: v2 gets there by
+   refusing questions the corpus *does* answer (multi-hop refusal accuracy
+   0.667; it refused "Яка температура використовується для відповідей RAG?",
+   which is stated verbatim in the corpus). The judge scores a refusal as fully
+   supported, so refusing more raises faithfulness. This is the concrete reason
+   `refusal_accuracy` is scored in both directions and read alongside
+   faithfulness — either one alone promotes the wrong version.
+
+3. **The language rule changed nothing and was kept anyway.** v3 answers all
+   three answerable Ukrainian questions in Ukrainian — but so did v1, without
+   being told to. v2's only English answer to a Ukrainian question was the
+   mandated refusal sentence, which is English by design. The hypothesis is not
+   confirmed: this model mirrors language on its own, and the rule is insurance
+   against a model that does not, not a measured improvement. Recording it as
+   "not confirmed" costs nothing; pretending it worked would poison every later
+   comparison.
+
+4. **Open defect: citation format drift.** v3's citation validity is 0.842,
+   not 1.000, because the model sometimes emits `[1]` instead of `[S1]` —
+   visible in q18. The metric is doing its job; the fix belongs in a v4 that
+   shows the tag format by example rather than describing it.
+
+**Caveats.** 23 questions: one item moves a mean by 0.043, so the v2↔v3
+faithfulness difference (0.065) is barely outside noise and should not be quoted
+as a precise effect. The v1→v3 refusal difference (0/4 versus 4/4) is not
+subtle. The judge is a 7B model, independent of the generator but not a human.
 
 ## E4 — Latency and memory budget
 

@@ -32,9 +32,25 @@ user: |
 
   Answer:
 eval:
-  harness: "voicerag eval --prompt rag_answer@v2 --judge"
+  harness: "voicerag eval --judge --judge-model qwen2.5:7b-instruct --prompt rag_answer@v2"
   dataset: data/eval/qa.jsonl
-  recorded: null
-  targets:
-    - refusal_accuracy must improve over v1 on the 4 out_of_corpus items
-    - citation_validity > 0.9 (no [Sn] tag pointing outside the provided sources)
+  recorded:
+    date: 2026-09-21
+    generator: qwen2.5:3b-instruct (ollama, q4)
+    judge: qwen2.5:7b-instruct
+    retrieval: multilingual-e5-small + BM25 (RRF) + bge-reranker-v2-m3, top_k=20 top_n=4
+    hardware: RTX 4060 Laptop 8GB
+    report: runs/eval/real-v2.json
+    metrics:
+      refusal_accuracy: 0.913
+      out_of_corpus_refusal_rate: 1.000
+      faithfulness: 1.000
+      citation_rate: 0.737
+      citation_validity: 0.737
+      mean_answer_words: 29.9
+      mean_latency_ms: 3357
+  finding: >
+    Fixed the hallucinations v1 exposed - all 4 out-of-corpus questions refused.
+    But it over-refuses answerable ones (multi_hop refusal_accuracy 0.667), and
+    that is exactly why its faithfulness reads 1.000: the judge scores a refusal
+    as fully supported. Faithfulness alone would have ranked v2 above v3.
