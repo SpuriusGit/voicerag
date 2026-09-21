@@ -2,6 +2,7 @@ from voicerag.monitoring.metrics import (
     ERRORS,
     STAGE_LATENCY,
     observe_stage,
+    record_fusion,
     render_prometheus,
     track,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "ResourceSampler",
     "ResourceSnapshot",
     "observe_stage",
+    "record_fusion",
     "render_prometheus",
     "snapshot_resources",
     "track",

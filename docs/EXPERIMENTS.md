@@ -89,13 +89,57 @@ Re-run on 2026-09-21 with `multilingual-e5-small` on an RTX 4060 Laptop
    heading section already fits the budget. A property of the corpus, not of
    chunking.
 
-**What this means for the shipped default.** `hybrid: true` is currently on, and
-on this corpus it is not earning its place. It is kept — with this result
-recorded against it — because the corpus is 6 English documents and hybrid
-retrieval's whole purpose is exact-identifier matching on queries in the corpus
-language, which 19 questions cannot settle either way. The honest next step is
-to gate fusion on query language (or require a minimum BM25 score before it
-contributes) and re-measure, not to flip a default on one Ukrainian question.
+**What this means for the shipped default.** The next step is not to flip a
+default on one question, but to fix the mechanism: stop fusing BM25 when BM25
+has nothing to fuse. That is E1c.
+
+### E1c — gating fusion on lexical coverage
+
+**Question.** If BM25 only hurts when it has no vocabulary in common with the
+query, can that condition be detected cheaply and used to skip fusion?
+
+**Design, chosen by measurement rather than intuition.** Two candidate
+statistics were computed over all 23 questions before anything was implemented:
+
+| statistic | English questions | Ukrainian questions | separates? |
+| --- | --- | --- | --- |
+| `lexical_coverage` — share of query terms present in the index | 0.38 – 1.00 | 0.00 – 0.30 | **yes**, gap of 0.08 |
+| IDF-weighted signal — share of discriminative mass matched | 0.07 – 0.63 | 0.00 – 0.21 | no, ranges overlap |
+
+The IDF-weighted version is the more sophisticated idea and it is the one that
+fails: `q20` ("What is the capital of Australia?") scores 0.07 because its words
+are common ones, which is not the property being detected. Plain coverage
+answers the actual question — *does BM25 recognise these words at all* — and a
+query in a language the corpus does not contain scores near zero by
+construction, with no language detector required.
+
+The threshold is `0.35`, sitting in the observed gap. **It is calibrated on 23
+questions with 0.08 of margin, so it is a reasonable default, not a constant
+anyone should trust blindly** — it is exposed as
+`VOICERAG_RAG__MIN_LEXICAL_OVERLAP`. The mechanism is the durable part.
+
+**Result** (`runs/ablation/ablation-20260921-141216.json`, same setup as E1b):
+
+| variant | queries fused | hit@1 | MRR | nDCG@4 | mean query |
+| --- | --- | --- | --- | --- | --- |
+| dense only | 0 / 19 | 1.000 | 1.000 | 0.980 | 6.2 ms |
+| hybrid, always fuse | 19 / 19 | 0.947 | 0.974 | 0.981 | 6.2 ms |
+| **hybrid + lexical gate (shipped)** | 16 / 19 | **1.000** | **1.000** | **1.000** | **6.1 ms** |
+| gated hybrid + cross-encoder | 16 / 19 | 1.000 | 1.000 | 1.000 | 671.4 ms |
+
+The gate skips exactly the three Ukrainian questions with ground truth and fuses
+the other sixteen. It recovers the hit@1 that unconditional fusion lost **and**
+keeps the ranking quality that BM25 contributes: nDCG@4 1.000, against 0.980 for
+dense-only and 0.981 for always-fuse. It is the best non-reranked configuration
+on every metric, at no measurable latency cost.
+
+So the E1b result did not mean "hybrid retrieval is a bad idea". It meant
+"fusing unconditionally is a bad idea". The distinction is only visible because
+the failure was traced to a named question instead of averaged away.
+
+`voicerag_fusion_decisions_total{decision=...}` counts the skips in production:
+a rising skip rate means queries are arriving in a language the index does not
+contain, which is a content problem, not a retrieval bug.
 
 ## E2 — Cross-encoder reranking
 
@@ -105,22 +149,29 @@ contributes) and re-measure, not to flip a default on one Ukrainian question.
 
 | | hit@1 | nDCG@4 | rerank stage latency |
 | --- | --- | --- | --- |
-| hybrid, no reranker | 0.947 | 0.981 | — |
-| hybrid + `bge-reranker-v2-m3` | **1.000** | **1.000** | **656 ms** (p95 884 ms) |
-| dense only, no reranker | **1.000** | 0.980 | — (6 ms total query) |
+| hybrid, always fuse, no reranker | 0.947 | 0.981 | — |
+| hybrid, always fuse + `bge-reranker-v2-m3` | 1.000 | 1.000 | 656 ms (p95 884 ms) |
+| **hybrid + lexical gate, no reranker** | **1.000** | **1.000** | **— (6 ms total query)** |
+| gated hybrid + `bge-reranker-v2-m3` | 1.000 | 1.000 | 665 ms |
 
-**Finding: on this corpus, no.** The cross-encoder behaves exactly as theory
-predicts — it moves `hit@1` and nDCG, not `hit@4`, because its job is ordering a
-shortlist rather than finding new documents. But the one question it rescues is
-q18, the same question BM25 broke. Dense-only retrieval already answers it
-correctly in 6 ms; the reranker spends **656 ms — 42% of end-to-end latency
-(E4)** — repairing damage the fusion step caused.
+**Finding: on this corpus, no — and after E1c, emphatically no.** The
+cross-encoder behaves exactly as theory predicts: it moves `hit@1` and nDCG,
+not `hit@4`, because its job is ordering a shortlist rather than finding new
+documents. But the single question it rescued was q18 — the one unconditional
+BM25 fusion had broken. Once the gate stops BM25 from breaking it, the reranker
+has nothing left to fix: gated retrieval and gated-plus-reranked retrieval
+produce **identical** metrics (1.000 / 1.000 / 1.000), and the reranker's
+contribution is 665 ms of latency for a measurably empty difference.
 
-That is not an argument that reranking is useless. It is an argument that
-**this corpus cannot demonstrate its value**, because retrieval is already
-perfect without it. A reranker earns 656 ms when the retriever is genuinely
+That is not an argument that reranking is useless in general. It is an argument
+that **this corpus cannot demonstrate its value**, because retrieval is already
+perfect without it. A reranker earns 650 ms when the retriever is genuinely
 imperfect — a larger, more confusable corpus. Until such a corpus exists here,
-the number to quote is the cost, not a benefit.
+the number to quote for it is its cost.
+
+It also illustrates a trap worth naming: before E1c, the reranker looked like it
+was buying +0.053 hit@1. It was actually paying to undo damage from an earlier
+stage. Measuring a component against a broken baseline flatters it.
 
 **Note on the ablation's 702.8 ms** versus the benchmark's 656 ms: the ablation
 mean includes loading the cross-encoder on the first query. E4 warms up first
@@ -270,6 +321,56 @@ than reporting none.
 
 The method, the configuration rationale and the promotion criteria are in
 [FINETUNING.md](FINETUNING.md).
+
+## E6 — How much of a difference is real?
+
+**Question.** The gate (E1c) improved retrieval. Did it change answer quality —
+and more importantly, could this harness even tell?
+
+**Why it had to be asked.** Generation runs at temperature 0.1, not 0. It is
+nearly deterministic, which is not deterministic. Before attributing any
+answer-metric difference to a change, the size of run-to-run noise has to be
+known. So each configuration was run twice, everything else identical.
+
+| run | fusion | citation rate | faithfulness | token recall | words |
+| --- | --- | --- | --- | --- | --- |
+| `real-v3` | always | 0.842 | 0.935 | 0.587 | 24.9 |
+| `real-v3-repeat` | always | 0.842 | 0.913 | 0.582 | 25.1 |
+| `real-v3-gated` | gate | 0.737 | 0.891 | 0.588 | 25.6 |
+| `real-v3-gated-2` | gate | 0.895 | 0.935 | 0.580 | 25.4 |
+
+**Finding: the harness cannot resolve this difference, and neither can anyone
+else at this sample size.**
+
+- Citation rate varies by **0.158 between two runs of the same configuration**
+  (gated: 0.737 then 0.895) — three questions. Both always-fuse runs happened to
+  land on 0.842, which at n=2 says nothing about stability.
+- Faithfulness varies by **0.022 across identical always-fuse runs** and spans
+  0.891–0.935 within the gated pair.
+- Refusal accuracy was 1.000 in all four runs — the one answer metric that was
+  stable here, because it measures a behaviour the prompt pins down rather than
+  a wording choice.
+
+Taken alone, `real-v3-gated` looked like the gate had cost 2 citations and 0.044
+faithfulness. The second gated run scored *higher* than both always-fuse runs.
+The first reading was noise, and a single run would have shipped it as a finding.
+
+**Consequences, applied backwards as well as forwards.**
+
+1. Answer-metric differences below roughly **0.1 on citation rate** and **0.05
+   on faithfulness** are not interpretable at 19–23 questions and 1–2 runs.
+2. This retroactively qualifies E3: the v2↔v3 faithfulness difference of 0.065
+   sits inside that band and must not be quoted as an effect. The v1↔v3 refusal
+   difference (0/4 versus 4/4 out-of-corpus) sits far outside it and stands.
+3. The E1c retrieval result is unaffected — retrieval is deterministic given a
+   fixed index, so its numbers repeat exactly.
+4. The cheap fix for a future run is temperature 0 plus a fixed seed for
+   evaluation, and reporting mean ± spread over at least three runs rather than
+   a single number. Not done here; recorded as the next thing to do.
+
+The uncomfortable version of this finding: **most of the answer-quality numbers
+elsewhere in this document are single-run measurements**, and this section is
+the reason to treat the small ones as indicative rather than settled.
 
 ## Reproducing everything
 

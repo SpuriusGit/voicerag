@@ -85,6 +85,8 @@ class RAGPipeline:
             reranker=build_reranker(cfg.rag.reranker, cfg.rag.reranker_model, cfg.rag.device),
             top_k=cfg.rag.top_k,
             top_n=cfg.rag.top_n,
+            fusion=cfg.rag.fusion,
+            min_lexical_overlap=cfg.rag.min_lexical_overlap,
         )
         return cls(
             retriever=retriever,

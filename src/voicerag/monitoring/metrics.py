@@ -61,6 +61,13 @@ RTF = Histogram(
     registry=REGISTRY,
 )
 
+FUSION_DECISIONS = Counter(
+    "voicerag_fusion_decisions_total",
+    "Whether BM25 was fused into the candidate list, and why not when it was skipped.",
+    labelnames=("decision",),
+    registry=REGISTRY,
+)
+
 GPU_MEMORY_USED = Gauge(
     "voicerag_gpu_memory_used_bytes",
     "GPU memory currently used, per device.",
@@ -117,6 +124,11 @@ def record_stt(model: str, audio_seconds: float, processing_seconds: float) -> N
     AUDIO_SECONDS.labels(model=model).inc(audio_seconds)
     if audio_seconds > 0:
         RTF.labels(model=model).observe(processing_seconds / audio_seconds)
+
+
+def record_fusion(decision: str) -> None:
+    """A rising skip rate means queries are arriving in a language the index lacks."""
+    FUSION_DECISIONS.labels(decision=decision).inc()
 
 
 def render_prometheus() -> bytes:

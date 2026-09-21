@@ -152,25 +152,45 @@ On that weak embedder, BM25 fusion is worth 5 points of hit@4 and over-splitting
 | hybrid, 400/60 | 1.000 | 0.842 | 0.921 | 0.942 | 8 ms |
 | hybrid + cross-encoder rerank | 1.000 | **1.000** | **1.000** | **1.000** | 703 ms |
 
-Three things fall out of this, and none of them is flattering:
+**hit@4 is saturated** — every variant scores 1.000, so the headline metric can
+no longer rank anything and the eval set has to get harder. But `hit@1` still
+discriminated, and it said hybrid retrieval was *worse* than plain dense, by
+exactly one question:
 
-- **hit@4 is saturated.** Every variant scores 1.000, so the headline metric can
-  no longer rank configurations. The eval set has to get harder before it can
-  settle anything else.
-- **Hybrid retrieval loses to plain dense here**, costing 0.053 of hit@1 — one
-  question: the Ukrainian *"Яка температура використовується для відповідей
-  RAG?"*. The corpus is English, so BM25 has no lexical overlap to work with,
-  its ranking is close to noise, and RRF gives that noise an equal vote. BM25
-  does not do cross-lingual retrieval. The default is kept, with the result
-  recorded against it, because 19 questions cannot settle it either way — the
-  fix to measure next is gating fusion on query language.
-- **The cross-encoder repairs exactly the question BM25 broke**, for 656 ms —
-  42% of end-to-end latency. Dense-only already answers it in 6 ms. On this
-  corpus reranking cannot show its value, so the number to quote is its cost.
+> **q18** — *"Яка температура використовується для відповідей RAG?"*
+> dense ranks the correct chunk first; hybrid ranks an unrelated one first.
+
+The corpus is English and the question is Ukrainian, so BM25 has almost no
+vocabulary in common with the query, its ranking is close to noise, and RRF —
+which weighs purely by rank — gives that noise an equal vote.
+
+### So the fusion step was gated, and re-measured
+
+BM25 now joins only when at least 35% of the query's terms exist in the index
+(`lexical_coverage`). No language detector: a query in a language the corpus
+does not contain scores near zero by construction. The threshold was chosen
+after measuring the statistic across all 23 questions — English spans 0.38–1.00,
+Ukrainian 0.00–0.30 — not by intuition.
+
+| variant | fused | hit@1 | MRR | nDCG@4 | mean query |
+| --- | --- | --- | --- | --- | --- |
+| dense only | 0 / 19 | 1.000 | 1.000 | 0.980 | 6.2 ms |
+| hybrid, always fuse | 19 / 19 | 0.947 | 0.974 | 0.981 | 6.2 ms |
+| **hybrid + lexical gate — shipped** | 16 / 19 | **1.000** | **1.000** | **1.000** | **6.1 ms** |
+| gated hybrid + cross-encoder | 16 / 19 | 1.000 | 1.000 | 1.000 | 671 ms |
+
+The gate skips exactly the three Ukrainian questions and beats both alternatives
+on every metric at no latency cost. So the earlier result did not mean "hybrid
+retrieval is a bad idea" — it meant "fusing unconditionally is a bad idea", a
+distinction visible only because the failure was traced to a named question
+instead of averaged away.
+
+It also deflates the reranker: once BM25 stops breaking q18, the cross-encoder
+has nothing left to fix — identical metrics for **665 ms, 42% of end-to-end
+latency**. Measuring a component against a broken baseline flatters it.
 
 Only the chunk-size finding replicates across both embedders: 400/60 is worst
-in both. That is the one result solid enough to act on.
-See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method, mechanism and caveats.
+in both. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method and caveats.
 
 ## Answer quality
 
@@ -305,14 +325,14 @@ tests/               79 tests, no GPU or network required
 
 ## Design decisions worth defending
 
-- **Hybrid retrieval over pure dense — on probation.** The argument is that
-  embeddings miss exact identifiers (model names, CLI flags, error codes), which
-  is much of what people ask a technical knowledge base, and that fusing by rank
-  (RRF) avoids calibrating cosine similarity against BM25 scores. The
-  measurement above does not support it on this corpus: BM25 contributes noise
-  on cross-lingual queries and costs one question. Kept, flagged, and scheduled
-  for a re-measure with language-gated fusion — a default that survives its own
-  disconfirming result should at least be labelled as such.
+- **Hybrid retrieval, but only where BM25 can see the query.** Embeddings miss
+  exact identifiers (model names, CLI flags, error codes), which is much of what
+  people ask a technical knowledge base, and fusing by rank (RRF) avoids
+  calibrating cosine similarity against BM25 scores. Measurement then showed
+  unconditional fusion *hurting* on cross-lingual queries, so fusion is gated on
+  lexical coverage — and the gated version beats both plain dense and
+  always-fuse. The design survived contact with the data by being narrowed, not
+  by being defended.
 - **Heading-aware chunking.** A chunk reading "8 GB is the practical limit" is
   useless without its heading path; the path is prepended before embedding. The
   chunk-size result is the one that replicated across both embedders.
@@ -331,14 +351,17 @@ tests/               79 tests, no GPU or network required
   embedder the retrieval metrics saturate at 1.000, so they can no longer rank
   configurations — the eval set needs to get harder before it can. The harness,
   not the numbers, is the deliverable.
-- 23 questions is a small sample: one item moves a per-item mean by 0.043, so
-  differences under ~0.05 are noise. The v1→v3 refusal gap (0 / 4 versus 4 / 4)
-  is far outside that band; the v2↔v3 faithfulness gap is not.
+- **Answer metrics are noisier than they look.** Generation runs at temperature
+  0.1, not 0. Running one configuration twice moved citation rate by 0.158 —
+  three questions — and faithfulness by up to 0.044. So differences below ~0.1
+  on citation rate and ~0.05 on faithfulness are not interpretable here, the
+  v2↔v3 faithfulness gap included. Retrieval metrics are deterministic and
+  unaffected. Fix for next time: temperature 0 and mean ± spread over three
+  runs. Measured in [E6](docs/EXPERIMENTS.md); a single run would have shipped
+  a noise artefact as a finding.
 - The judge is a 7B model grading a 3B one. It is independent of the generator,
   but it is not a human, and it scores refusals generously — see the v2 result.
   Use it for relative comparisons, never as an accuracy figure.
-- BM25 fusion is not language-gated, so it contributes noise on queries that are
-  not in the corpus language. Found by measurement, documented, not yet fixed.
 - v3 occasionally emits `[1]` instead of `[S1]`, which is why citation validity
   is 0.842 rather than 1.000. A v4 should show the tag format by example.
 - The LoRA scripts are written for a GPU box and validated by dry-run and config

@@ -3,6 +3,13 @@
 Dense embeddings miss exact identifiers — model names, flags, error codes — which
 is exactly what people ask about in a technical knowledge base. BM25 catches
 those, and the two result lists are fused with Reciprocal Rank Fusion.
+
+BM25 only works when the query and the corpus share a vocabulary. Ask an English
+corpus a Ukrainian question and almost no query term exists in the index, so the
+ranking BM25 returns is close to noise — and RRF, which weighs by rank alone,
+gives that noise the same vote as a good dense ranking. :func:`lexical_coverage`
+measures how much of the query BM25 can actually see, so the caller can decline
+to fuse when the answer is "almost none". See docs/EXPERIMENTS.md E1b/E1c.
 """
 
 from __future__ import annotations
@@ -37,6 +44,19 @@ class BM25Index:
         self.idf = {
             term: math.log(1 + (n - df + 0.5) / (df + 0.5)) for term, df in doc_freq.items()
         }
+
+    def lexical_coverage(self, query: str) -> float:
+        """Fraction of query terms that exist anywhere in the index.
+
+        This is a language check that needs no language detector: a query in a
+        language the corpus does not contain scores near zero by construction,
+        while a query full of in-corpus identifiers scores high. Returns 0.0 for
+        an empty query, which callers treat as "do not fuse".
+        """
+        terms = tokenize(query)
+        if not terms:
+            return 0.0
+        return sum(1 for term in terms if term in self.idf) / len(terms)
 
     def search(self, query: str, top_k: int = 10) -> list[ScoredChunk]:
         terms = tokenize(query)

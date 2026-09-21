@@ -34,6 +34,24 @@ class RAGSettings(BaseModel):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     top_k: int = Field(20, ge=1, description="candidates fetched from the vector store")
     top_n: int = Field(4, ge=1, description="chunks kept after reranking")
+    fusion: Literal["lexical_gate", "always", "off"] = Field(
+        "lexical_gate",
+        description=(
+            "How BM25 joins dense retrieval. 'lexical_gate' fuses only when enough of "
+            "the query exists in the index vocabulary, 'always' fuses unconditionally, "
+            "'off' is dense-only."
+        ),
+    )
+    min_lexical_overlap: float = Field(
+        0.35,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Share of query terms that must appear in the index before BM25 is fused. "
+            "Calibrated in docs/EXPERIMENTS.md E1c; the mechanism matters more than "
+            "the constant."
+        ),
+    )
     chunk_size: int = 800
     chunk_overlap: int = 120
     store_path: Path = Path("storage/index")

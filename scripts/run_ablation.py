@@ -44,11 +44,22 @@ class Variant:
     rerank: bool
     top_k: int = 20
     top_n: int = 4
+    # "always" reproduces the unconditional fusion the earlier runs measured;
+    # "lexical_gate" only fuses BM25 when the query shares the index vocabulary.
+    fusion: str = "always"
 
 
 DEFAULT_VARIANTS = [
-    Variant("dense-only, 800/120", 800, 120, hybrid=False, rerank=False),
-    Variant("hybrid, 800/120 (shipped)", 800, 120, hybrid=True, rerank=False),
+    Variant("dense-only, 800/120", 800, 120, hybrid=False, rerank=False, fusion="off"),
+    Variant("hybrid always-fuse, 800/120", 800, 120, hybrid=True, rerank=False),
+    Variant(
+        "hybrid + lexical gate, 800/120",
+        800,
+        120,
+        hybrid=True,
+        rerank=False,
+        fusion="lexical_gate",
+    ),
     Variant("hybrid, 400/60", 400, 60, hybrid=True, rerank=False),
     Variant("hybrid, 1600/200", 1600, 200, hybrid=True, rerank=False),
     Variant("hybrid, no overlap", 800, 0, hybrid=True, rerank=False),
@@ -113,12 +124,16 @@ def evaluate_variant(variant: Variant, corpus: Path, items, cfg, pool: ModelPool
         top_k=variant.top_k,
         top_n=variant.top_n,
         hybrid=variant.hybrid,
+        fusion=variant.fusion,
+        min_lexical_overlap=cfg.min_lexical_overlap,
     )
 
     rows = []
     latencies = []
+    n_fused = 0
     for item in items:
         result = retriever.retrieve(item.question)
+        n_fused += int(result.fused)
         sources: list[str] = []
         for scored in result.chunks:
             if scored.chunk.source not in sources:
@@ -133,6 +148,8 @@ def evaluate_variant(variant: Variant, corpus: Path, items, cfg, pool: ModelPool
         "chunk_size": variant.chunk_size,
         "chunk_overlap": variant.chunk_overlap,
         "hybrid": variant.hybrid,
+        "fusion": variant.fusion,
+        "queries_fused": n_fused,
         "rerank": variant.rerank,
         "index_build_s": round(index_s, 2),
         "mean_query_ms": round(sum(latencies) / len(latencies), 1),
@@ -180,7 +197,14 @@ def main() -> None:
     variants = list(DEFAULT_VARIANTS)
     if args.with_rerank:
         variants.append(
-            Variant("hybrid + cross-encoder rerank", 800, 120, hybrid=True, rerank=True)
+            Variant(
+                "gated hybrid + cross-encoder rerank",
+                800,
+                120,
+                hybrid=True,
+                rerank=True,
+                fusion="lexical_gate",
+            )
         )
 
     print(f"Embedder: {cfg.embedder} ({cfg.embedding_model})")

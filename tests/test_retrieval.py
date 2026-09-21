@@ -105,3 +105,54 @@ def test_retriever_returns_stage_timings(pipeline):
 
 def test_retriever_respects_top_n(pipeline):
     assert len(pipeline.retriever.retrieve("gpu", top_k=10, top_n=2).chunks) == 2
+
+
+def test_lexical_coverage_separates_in_corpus_from_foreign_queries(corpus_dir):
+    from voicerag.rag.chunking import chunk_documents
+    from voicerag.rag.loaders import load_directory
+
+    index = BM25Index(chunk_documents(load_directory(corpus_dir), 800, 120))
+
+    # English question about the corpus: most terms exist in the index.
+    assert index.lexical_coverage("How much VRAM does an RTX 4060 laptop GPU have?") > 0.6
+    # Ukrainian question against an English corpus: BM25 has nothing to work with.
+    assert index.lexical_coverage("Яка температура використовується для відповідей RAG?") < 0.35
+    assert index.lexical_coverage("") == 0.0
+
+
+def test_fusion_gate_skips_bm25_when_the_query_is_out_of_vocabulary(pipeline):
+    retriever = pipeline.retriever
+    retriever.fusion = "lexical_gate"
+
+    english = retriever.retrieve("How much VRAM does an RTX 4060 laptop GPU have?")
+    ukrainian = retriever.retrieve("Що робити, якщо транскрипти порожні або беззмістовні?")
+
+    assert english.fused is True
+    assert ukrainian.fused is False
+    assert ukrainian.lexical_coverage < english.lexical_coverage
+
+
+def test_fusion_always_ignores_the_gate(pipeline):
+    pipeline.retriever.fusion = "always"
+    result = pipeline.retriever.retrieve("Що робити, якщо транскрипти порожні?")
+    assert result.fused is True
+
+
+def test_fusion_off_disables_bm25_entirely(pipeline):
+    from voicerag.rag.retriever import Retriever
+
+    retriever = Retriever(
+        store=pipeline.retriever.store,
+        embedder=pipeline.retriever.embedder,
+        fusion="off",
+    )
+    assert retriever._bm25 is None
+    assert retriever.retrieve("gpu memory").fused is False
+
+
+def test_gated_retriever_still_answers_the_question_bm25_used_to_break(pipeline):
+    """Regression guard for the q18 failure documented in EXPERIMENTS.md E1b."""
+    pipeline.retriever.fusion = "lexical_gate"
+    result = pipeline.retriever.retrieve("Яка температура використовується для відповідей RAG?")
+    assert result.fused is False
+    assert result.chunks
