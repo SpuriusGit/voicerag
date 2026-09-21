@@ -55,7 +55,16 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         self.device = resolve_device(device)  # type: ignore[arg-type]
         self.batch_size = batch_size
         self._model = SentenceTransformer(model_name, device=self.device)
-        self.dimension = int(self._model.get_sentence_embedding_dimension())
+        dimension = self._model.get_sentence_embedding_dimension()
+        if dimension is None:
+            # Some architectures (e.g. asymmetric or multi-head models) do not
+            # report a single embedding width. Fail here rather than write an
+            # index whose declared dimension is wrong.
+            raise ValueError(
+                f"{model_name} does not report a sentence embedding dimension; "
+                "pick a standard bi-encoder such as intfloat/multilingual-e5-small."
+            )
+        self.dimension = int(dimension)
         self._needs_e5_prefix = "e5" in model_name.lower()
 
     def _encode(self, texts: list[str], prefix: str) -> np.ndarray:

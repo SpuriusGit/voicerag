@@ -43,27 +43,88 @@ anyone can reproduce it), `top_k=20`, `top_n=4`, no reranker.
    the cost of overlap is a few percent of index size.
 
 **Caveats.** 19 questions is a small sample: a single item is worth 0.053 of
-hit@4, so differences below ~0.05 are noise. The hashed embedder is weaker than
-e5 in absolute terms; re-run with
-`VOICERAG_RAG__EMBEDDER=sentence_transformers` for production numbers.
+hit@4, so differences below ~0.05 are noise.
+
+### E1b — the same ablation with the production embedder
+
+Re-run on 2026-09-21 with `multilingual-e5-small` on an RTX 4060 Laptop
+(`runs/ablation/ablation-20260921-140004.json`). **It reverses finding 1.**
+
+| variant | chunks | hit@4 | hit@1 | MRR | nDCG@4 | mean query ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| **dense only, 800/120** | 22 | 1.000 | **1.000** | **1.000** | 0.980 | **6.0** |
+| hybrid, 800/120 (shipped) | 22 | 1.000 | 0.947 | 0.974 | 0.981 | 5.9 |
+| hybrid, 400/60 | 36 | 1.000 | 0.842 | 0.921 | 0.942 | 7.8 |
+| hybrid, 1600/200 | 22 | 1.000 | 0.947 | 0.974 | 0.981 | 7.4 |
+| hybrid, no overlap | 22 | 1.000 | 0.947 | 0.974 | 0.981 | 7.1 |
+| hybrid + cross-encoder rerank | 22 | 1.000 | **1.000** | **1.000** | **1.000** | 702.8 |
+
+1. **hit@4 is saturated.** Every variant reaches 1.000, so the headline metric
+   can no longer rank configurations. `hit@1`, MRR and nDCG still discriminate,
+   and they are what the rest of this section uses. The real conclusion is that
+   the eval set is too easy and has to grow before it can settle anything else.
+
+2. **Hybrid retrieval is worse than dense-only here — the opposite of E1.**
+   With a strong multilingual embedder, fusing BM25 costs 0.053 of hit@1. That
+   is exactly one question, and it is identifiable:
+
+   > **q18** — *"Яка температура використовується для відповідей RAG?"*
+   > dense ranks `01_model_serving.md > Generation parameters` first (correct);
+   > hybrid ranks `05_finetuning_policy.md > Evaluation` first (wrong).
+
+   The mechanism is clear. The corpus is English, the question is Ukrainian, so
+   BM25 has almost no lexical overlap to work with and its ranking is close to
+   noise. RRF weights both lists equally by rank, so that noise gets an equal
+   vote and displaces a correct dense hit. **BM25 does not do cross-lingual
+   retrieval, and fusing it unconditionally injects noise on every non-English
+   query** — a defect this corpus is small enough to make visible as a single
+   named item rather than a vague average.
+
+3. **Chunk size replicates across embedders.** 400/60 is the worst variant in
+   both runs (hit@1 0.842 here, hit@4 0.895 in E1). Splitting mid-passage hurts
+   regardless of how good the embedder is — the one finding here solid enough
+   to act on.
+
+4. Overlap and 1600/200 still change nothing, for the reason given above: every
+   heading section already fits the budget. A property of the corpus, not of
+   chunking.
+
+**What this means for the shipped default.** `hybrid: true` is currently on, and
+on this corpus it is not earning its place. It is kept — with this result
+recorded against it — because the corpus is 6 English documents and hybrid
+retrieval's whole purpose is exact-identifier matching on queries in the corpus
+language, which 19 questions cannot settle either way. The honest next step is
+to gate fusion on query language (or require a minimum BM25 score before it
+contributes) and re-measure, not to flip a default on one Ukrainian question.
 
 ## E2 — Cross-encoder reranking
 
-**Question.** Does reranking justify roughly 180 ms of added latency?
+**Question.** Does reranking justify its latency?
 
-**Status: not run in this repository.** It requires downloading
-`BAAI/bge-reranker-v2-m3` (~2 GB) and a GPU to be meaningful. The experiment is
-implemented and one command away:
+**Method.** The last row of E1b plus the per-stage benchmark in E4.
 
-```bash
-make install-ml
-VOICERAG_RAG__EMBEDDER=sentence_transformers python scripts/run_ablation.py --with-rerank
-```
+| | hit@1 | nDCG@4 | rerank stage latency |
+| --- | --- | --- | --- |
+| hybrid, no reranker | 0.947 | 0.981 | — |
+| hybrid + `bge-reranker-v2-m3` | **1.000** | **1.000** | **656 ms** (p95 884 ms) |
+| dense only, no reranker | **1.000** | 0.980 | — (6 ms total query) |
 
-**What to look for.** Reranking should move `hit@1` far more than `hit@4` — its
-job is ordering the shortlist, not finding new documents. If `hit@1` does not
-improve, the retriever is already returning the right chunk first and the
-reranker is pure latency.
+**Finding: on this corpus, no.** The cross-encoder behaves exactly as theory
+predicts — it moves `hit@1` and nDCG, not `hit@4`, because its job is ordering a
+shortlist rather than finding new documents. But the one question it rescues is
+q18, the same question BM25 broke. Dense-only retrieval already answers it
+correctly in 6 ms; the reranker spends **656 ms — 42% of end-to-end latency
+(E4)** — repairing damage the fusion step caused.
+
+That is not an argument that reranking is useless. It is an argument that
+**this corpus cannot demonstrate its value**, because retrieval is already
+perfect without it. A reranker earns 656 ms when the retriever is genuinely
+imperfect — a larger, more confusable corpus. Until such a corpus exists here,
+the number to quote is the cost, not a benefit.
+
+**Note on the ablation's 702.8 ms** versus the benchmark's 656 ms: the ablation
+mean includes loading the cross-encoder on the first query. E4 warms up first
+and is the number to trust.
 
 ## E3 — Prompt versions
 
@@ -152,9 +213,43 @@ voicerag bench --runs 20 --out runs/bench/latest.json
 Reports p50/p95/max per stage plus peak GPU memory, peak process RSS and mean
 GPU utilisation, sampled in a background thread during the run.
 
-**Status: the harness runs; no GPU numbers are recorded here**, because the
-measurements would describe one laptop and mislead anyone else. The budget the
-defaults are designed against is documented in `data/corpus/04_gpu_capacity.md`.
+**Measured.** 2026-09-21, RTX 4060 Laptop 8 GB, 20 runs after 3 warm-up runs,
+full production stack (`multilingual-e5-small` + BM25 + `bge-reranker-v2-m3`,
+`qwen2.5:3b-instruct` q4 on Ollama). Raw: `runs/bench/real.json`.
+
+| stage | mean | p50 | p95 | max | share of total |
+| --- | --- | --- | --- | --- | --- |
+| embed | 23 ms | 22 | 48 | 48 | 1% |
+| search | 1 ms | 0 | 1 | 1 | <1% |
+| **rerank** | **656 ms** | 648 | 884 | 884 | **42%** |
+| llm | 887 ms | 803 | 1307 | 1307 | 57% |
+| **total** | **1567 ms** | 1489 | 2142 | 2142 | |
+
+Peak GPU memory **7041 MB** of 8188, peak process RSS 1060 MB, mean GPU
+utilisation 54.7%.
+
+**Findings.**
+
+1. **Reranking costs as much as generation.** 656 ms against 887 ms for the LLM
+   itself. On a 3B model the cross-encoder is not a rounding error on top of
+   generation — it is half the latency budget. Combined with E2, where it buys
+   nothing this corpus can show, it is the first thing to drop under a latency
+   target.
+2. **Retrieval proper is free.** Embedding and vector search together are 24 ms,
+   1.5% of the request. Optimising them would be optimising noise.
+3. **Memory is genuinely tight.** 7041 MB peak of 8188 leaves ~1.1 GB of head
+   room with the 3B generator resident. That is the measurement behind the
+   guidance in `data/corpus/04_gpu_capacity.md` — and behind the crash below.
+
+**A real failure this produced.** The first attempt at E1b died with
+`torch.OutOfMemoryError` while loading the cross-encoder. Cause: the ablation
+script built a fresh embedder per variant, torch modules hold reference cycles,
+so five variants' weights were still resident when the sixth loaded, on top of
+1.47 GB Ollama was holding. Fixed by loading each model once
+(`ModelPool` in `scripts/run_ablation.py`) and emptying the allocator cache
+between variants. The metrics were unchanged by the fix — verified by re-running
+the light-backend ablation and diffing — so this was a memory bug, not a
+correctness bug.
 
 **What the stage split is for.** When p95 rises, one histogram moves:
 

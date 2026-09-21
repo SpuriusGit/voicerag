@@ -18,8 +18,8 @@ Run:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,19 +55,57 @@ DEFAULT_VARIANTS = [
 ]
 
 
-def evaluate_variant(variant: Variant, corpus: Path, items, cfg, workdir: Path) -> dict:
+class ModelPool:
+    """Loads each model once and hands the same instance to every variant.
+
+    Building a fresh embedder per variant leaks GPU memory: torch modules hold
+    reference cycles, so the previous variant's weights are still resident when
+    the next one loads, and on an 8 GB card the reranked variant then dies with
+    an out-of-memory error. Only the chunking changes between variants, so the
+    models never needed rebuilding in the first place.
+    """
+
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+        self._embedder = None
+        self._rerankers: dict[str, object] = {}
+
+    def embedder(self):
+        if self._embedder is None:
+            self._embedder = build_embedder(
+                self.cfg.embedder, self.cfg.embedding_model, self.cfg.device
+            )
+        return self._embedder
+
+    def reranker(self, kind: str):
+        if kind not in self._rerankers:
+            self._rerankers[kind] = build_reranker(kind, self.cfg.reranker_model, self.cfg.device)
+        return self._rerankers[kind]
+
+
+def free_gpu_cache() -> None:
+    """Return the allocator's unused blocks between variants."""
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
+def evaluate_variant(variant: Variant, corpus: Path, items, cfg, pool: ModelPool) -> dict:
     documents = load_directory(corpus)
     chunks = chunk_documents(documents, variant.chunk_size, variant.chunk_overlap)
-    embedder = build_embedder(cfg.embedder, cfg.embedding_model, cfg.device)
+    embedder = pool.embedder()
 
     started = time.perf_counter()
     store = VectorStore(embedder.dimension, embedder.name)
     store.add(chunks, embedder.embed_passages([c.text for c in chunks]))
     index_s = time.perf_counter() - started
 
-    reranker = build_reranker(
-        "cross_encoder" if variant.rerank else "noop", cfg.reranker_model, cfg.device
-    )
+    reranker = pool.reranker("cross_encoder" if variant.rerank else "noop")
     retriever = Retriever(
         store=store,
         embedder=embedder,
@@ -148,11 +186,12 @@ def main() -> None:
     print(f"Embedder: {cfg.embedder} ({cfg.embedding_model})")
     print(f"Questions with ground truth: {len(items)}\n")
 
+    pool = ModelPool(cfg)
     results = []
-    with tempfile.TemporaryDirectory() as tmp:
-        for variant in variants:
-            print(f"-> {variant.name} ...", flush=True)
-            results.append(evaluate_variant(variant, args.corpus, items, cfg, Path(tmp)))
+    for variant in variants:
+        print(f"-> {variant.name} ...", flush=True)
+        results.append(evaluate_variant(variant, args.corpus, items, cfg, pool))
+        free_gpu_cache()
 
     table = to_markdown(results, top_n=variants[0].top_n)
     print("\n" + table)

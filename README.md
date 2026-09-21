@@ -137,18 +137,40 @@ in seconds; the ranking of the variants is what matters, not the absolute values
 | hybrid, 400/60 | 36 | 0.895 | 0.789 | 0.833 | 0.849 |
 | hybrid, 1600/200 | 22 | 0.947 | 0.789 | 0.868 | 0.889 |
 
-Adding BM25 to dense retrieval is worth 5 points of hit@4 and 8 of MRR on this
-corpus. Over-splitting (400-char chunks) hurts: it fragments the passage that
-answers the question.
+On that weak embedder, BM25 fusion is worth 5 points of hit@4 and over-splitting
+(400-char chunks) clearly hurts.
 
-With the **production stack** — `multilingual-e5-small` + BM25 + the
-`bge-reranker-v2-m3` cross-encoder — the same 19 questions come back at
-`hit@4 = 1.000` and `MRR = 1.000`. That is a saturated metric, not a victory
-lap: 6 documents and 19 questions are simply too easy for a real embedder, so
-retrieval numbers can no longer discriminate between configurations and the
-honest next step is a harder eval set. The zero-dependency table above is kept
-precisely because it still separates the variants.
-See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method and caveats.
+### Then the same ablation with the real embedder reversed the first result
+
+`multilingual-e5-small`, RTX 4060 Laptop, same 19 questions
+(`runs/ablation/ablation-20260921-140004.json`):
+
+| variant | hit@4 | hit@1 | MRR | nDCG@4 | mean query |
+| --- | --- | --- | --- | --- | --- |
+| **dense only, 800/120** | 1.000 | **1.000** | **1.000** | 0.980 | **6 ms** |
+| hybrid, 800/120 (shipped) | 1.000 | 0.947 | 0.974 | 0.981 | 6 ms |
+| hybrid, 400/60 | 1.000 | 0.842 | 0.921 | 0.942 | 8 ms |
+| hybrid + cross-encoder rerank | 1.000 | **1.000** | **1.000** | **1.000** | 703 ms |
+
+Three things fall out of this, and none of them is flattering:
+
+- **hit@4 is saturated.** Every variant scores 1.000, so the headline metric can
+  no longer rank configurations. The eval set has to get harder before it can
+  settle anything else.
+- **Hybrid retrieval loses to plain dense here**, costing 0.053 of hit@1 — one
+  question: the Ukrainian *"Яка температура використовується для відповідей
+  RAG?"*. The corpus is English, so BM25 has no lexical overlap to work with,
+  its ranking is close to noise, and RRF gives that noise an equal vote. BM25
+  does not do cross-lingual retrieval. The default is kept, with the result
+  recorded against it, because 19 questions cannot settle it either way — the
+  fix to measure next is gating fusion on query language.
+- **The cross-encoder repairs exactly the question BM25 broke**, for 656 ms —
+  42% of end-to-end latency. Dense-only already answers it in 6 ms. On this
+  corpus reranking cannot show its value, so the number to quote is its cost.
+
+Only the chunk-size finding replicates across both embedders: 400/60 is worst
+in both. That is the one result solid enough to act on.
+See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) for method, mechanism and caveats.
 
 ## Answer quality
 
@@ -229,6 +251,22 @@ whether the reranker fell back to CPU or the context simply got longer.
 voicerag bench --runs 20 --out runs/bench/latest.json   # p50/p95/max + peak VRAM
 ```
 
+Measured on an RTX 4060 Laptop, full production stack, 20 runs after warm-up
+(`runs/bench/real.json`):
+
+| stage | mean | p50 | p95 | share |
+| --- | --- | --- | --- | --- |
+| embed | 23 ms | 22 | 48 | 1% |
+| search | 1 ms | 0 | 1 | <1% |
+| rerank | 656 ms | 648 | 884 | **42%** |
+| llm | 887 ms | 803 | 1307 | 57% |
+| **total** | **1567 ms** | 1489 | 2142 | |
+
+Peak GPU 7041 MB of 8188, peak RSS 1060 MB. Retrieval proper is 1.5% of the
+request; the cross-encoder costs almost as much as generation itself. That is
+the kind of thing an end-to-end average hides and a per-stage histogram makes
+impossible to miss.
+
 ## LoRA fine-tuning
 
 ```bash
@@ -267,12 +305,17 @@ tests/               79 tests, no GPU or network required
 
 ## Design decisions worth defending
 
-- **Hybrid retrieval over pure dense.** Embeddings miss exact identifiers —
-  model names, CLI flags, error codes — which is most of what people ask a
-  technical knowledge base. Fusing by rank (RRF) avoids calibrating cosine
-  similarity against BM25 scores, which live on unrelated scales.
+- **Hybrid retrieval over pure dense — on probation.** The argument is that
+  embeddings miss exact identifiers (model names, CLI flags, error codes), which
+  is much of what people ask a technical knowledge base, and that fusing by rank
+  (RRF) avoids calibrating cosine similarity against BM25 scores. The
+  measurement above does not support it on this corpus: BM25 contributes noise
+  on cross-lingual queries and costs one question. Kept, flagged, and scheduled
+  for a re-measure with language-gated fusion — a default that survives its own
+  disconfirming result should at least be labelled as such.
 - **Heading-aware chunking.** A chunk reading "8 GB is the practical limit" is
-  useless without its heading path; the path is prepended before embedding.
+  useless without its heading path; the path is prepended before embedding. The
+  chunk-size result is the one that replicated across both embedders.
 - **Refusal as a measured behaviour, not a hope.** The eval set contains
   unanswerable questions and the metric penalises both over-answering and
   over-refusing.
@@ -294,6 +337,10 @@ tests/               79 tests, no GPU or network required
 - The judge is a 7B model grading a 3B one. It is independent of the generator,
   but it is not a human, and it scores refusals generously — see the v2 result.
   Use it for relative comparisons, never as an accuracy figure.
+- BM25 fusion is not language-gated, so it contributes noise on queries that are
+  not in the corpus language. Found by measurement, documented, not yet fixed.
+- v3 occasionally emits `[1]` instead of `[S1]`, which is why citation validity
+  is 0.842 rather than 1.000. A v4 should show the tag format by example.
 - The LoRA scripts are written for a GPU box and validated by dry-run and config
   parsing here; no adapter has been trained in this repository.
 - No streaming responses, no multi-tenant auth, no incremental re-indexing.
